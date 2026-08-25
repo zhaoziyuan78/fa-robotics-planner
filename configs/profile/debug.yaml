@@ -1,0 +1,9 @@
+profile:
+  name: debug
+  seeds: [0]
+  image_size: [64, 64]
+  transitions: 1000
+  eval_episodes: 5
+  batch_size: 8
+  model_scale: 0.25
+

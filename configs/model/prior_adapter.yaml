@@ -1,0 +1,61 @@
+model:
+  name: FunctionAlignmentWM
+  action_prior:
+    type: transformer
+    d_model: 128
+    n_layers: 3
+    n_heads: 4
+    dropout: 0.1
+    max_length: 128
+  state_prior:
+    type: causal_video_transformer
+    d_model: 256
+    n_layers: 4
+    n_heads: 8
+    dropout: 0.1
+    max_length: 128
+    visual_dim: 128
+    normalize_visual: true
+    residual_prediction: true
+    gradient_clip_norm: 1.0
+  state_adapter:
+    enabled: true
+    hidden_dim: 512
+    learning_rate: 0.0001
+    loss_mode: residual
+    legacy_direct_next_state: false
+    lambda_multi: 1.0
+    rollout_discount: 0.99
+    # One-step residual fitting is the stable default.  Longer unrolls remain
+    # available as an ablation, but amplified early model error on Fetch/H1.
+    train_horizon: 1
+    train_context_length: 8
+    gradient_clip_norm: 1.0
+  action_adapter:
+    enabled: true
+    hidden_dim: 512
+    learning_rate: 0.001
+    gradient_clip_norm: 1.0
+    objective: soft_target_mle_with_conservative_kl
+    likelihood_clip: 0.001
+    # Zero initialization plus a bounded residual keeps the initial policy
+    # exactly equal to the frozen Action Prior and prevents early overcorrection.
+    residual_scale: 0.5
+    residual_clip: 4.0
+    target_sigma: 0.05
+    target_samples: 4
+    label_smoothing: 0.01
+    # The reference prior was already goal-conditioned. This implementation's
+    # strict action-only prior requires more adapter freedom while retaining a
+    # small conservative anchor.
+    kl_lambda: 0.02
+    kl_lambda_final: 0.001
+    kl_anneal_epochs: 10
+    # Preserve both direction and distance. Unit normalization discarded the
+    # stopping/phase signal needed by Windy and Fetch manipulation.
+    normalize_goal_direction: false
+    goal_feature_scale: 1.0
+    history_prefix_max: 0
+    history_noise_std: 0.05
+    history_dropout: 0.10
+  freeze_priors: true

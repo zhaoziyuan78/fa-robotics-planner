@@ -1,0 +1,50 @@
+env:
+  name: humanoid_reach
+  env_id: h1hand-reach-v0
+  image_size: [96, 96]
+  state_size: 512
+  proprio_size: 151
+  action_size: 61
+  goal_size: 3
+  action_adapter_achieved_goal_slice: [151, 154]
+  episode_horizon: 500
+  success_info_keys: [success, is_success, reward_success]
+  episode_success_mode: return
+  success_return_threshold: 12000
+  success_return_native_horizon: 1000
+  # The released reaching controller can differ from the neutral nominal over
+  # the full normalized action range; 0.25 clipped away the expert action.
+  residual_scale: 1.0
+  nominal_observation_size: 151
+  proprio_slice: [0, 151]
+  paired_data:
+    expert_fraction: 0.8
+    expert_noise: 0.03
+    legacy_expert_action_rms_threshold: 0.15
+  passive:
+    friction_multiplier: [0.8, 1.2]
+    damping_multiplier: [0.9, 1.1]
+    actuator_strength_multiplier: [0.9, 1.1]
+    impulse_std: 0.05
+  state_indices: &reach_indices
+    proprio: []
+    upright: []
+    hand_position: []
+    fall: []
+    goal: []
+    achieved_goal: []
+  scorer:
+    indices: *reach_indices
+    slices: {torso_height: [2, 3], hand_position: [151, 154]}
+    fall_height: 0.2
+    weights: {goal: 1.0, upright: 0.5, fall: 10.0, control: 0.001}
+  train_ranges:
+    friction_multiplier: [0.8, 1.2]
+    damping_multiplier: [0.9, 1.1]
+    actuator_strength_multiplier: [0.9, 1.1]
+
+planner:
+  num_candidates: 64
+
+eval:
+  proposal_std_scale: 0.03

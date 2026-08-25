@@ -1,0 +1,49 @@
+env:
+  name: windy
+  image_size: [64, 64]
+  state_size: 4
+  proprio_size: 2
+  proprio_slice: [2, 4]
+  goal_size: 2
+  action_adapter_achieved_goal_slice: [0, 2]
+  action_size: 2
+  dt: 0.1
+  episode_horizon: 100
+  gamma: 0.9
+  v_max: 1.0
+  a_max: 1.0
+  w_max: 0.6
+  k_max: 0.015
+  bounce_beta: 0.5
+  success_radius: 0.1
+  region_count: 4
+  region_w_scale: 0.6
+  edge_margin: 0.08
+  legacy_static_wind: true
+  paired_data:
+    expert_fraction: 0.8
+    expert_noise: 0.05
+    expert_kp: 10.0
+    expert_kd: 1.0
+    expert_kw: 0.0
+    successful_expert_only: true
+    success_reward_threshold: 1.0
+  region_colors:
+    - [60, 70, 80]
+    - [70, 80, 70]
+    - [80, 70, 60]
+    - [70, 60, 80]
+  train_ranges:
+    wind_scale: [0.0, 1.0]
+    slope: [-0.015, 0.015]
+
+# Windy's smooth controller does not exhibit the phase-transition exposure
+# bias seen in manipulation, so uncorrupted action histories fit it better.
+model:
+  action_adapter:
+    history_prefix_max: 0
+    history_noise_std: 0.0
+    history_dropout: 0.0
+
+eval:
+  proposal_std_scale: 0.1

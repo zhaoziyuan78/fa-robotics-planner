@@ -1,0 +1,61 @@
+env:
+  name: fetch_push
+  env_id: FetchPush-v4
+  image_size: [96, 96]
+  state_size: 64
+  proprio_size: 25
+  action_size: 4
+  proprio_slice: [0, 25]
+  goal_size: 3
+  achieved_goal_slice: [25, 28]
+  action_adapter_achieved_goal_slice: [25, 28]
+  object_velocity_slice: [14, 17]
+  gripper_position_slice: [0, 3]
+  approach_offset: 0.055
+  approach_safe_height: 0.10
+  approach_contact_height: 0.008
+  approach_xy_threshold: 0.04
+  paired_data:
+    expert_fraction: 0.8
+    expert_noise: 0.02
+    successful_expert_only: true
+    success_reward_threshold: 0.0
+    expert_until_first_success: true
+  state_adapter_loss_weights:
+    - {slice: [0, 3], weight: 50.0}
+    - {slice: [3, 9], weight: 20.0}
+    - {slice: [9, 11], weight: 10.0}
+    - {slice: [14, 17], weight: 20.0}
+    - {slice: [20, 23], weight: 50.0}
+    - {slice: [23, 25], weight: 10.0}
+    - {slice: [25, 28], weight: 20.0}
+  episode_horizon: 50
+  control_cost: 0.001
+  goal_score_dimensions: 2
+  contact_alignment_reward: 0.05
+  contact_alignment_distance: 0.06
+  approach_cost: 0.05
+  passive:
+    impulse_steps: [1, 3]
+    mass_multiplier: [0.8, 1.2]
+    friction_multiplier: [0.8, 1.2]
+  train_ranges:
+    mass_multiplier: [0.8, 1.2]
+    friction_multiplier: [0.8, 1.2]
+    block_size_multiplier: [0.9, 1.1]
+
+eval:
+  proposal_std_scale: 0.1
+
+model:
+  action_adapter:
+    # Fetch actions spend long phases at their bounds; Gaussian target
+    # smoothing biased those phase transitions. This is the audited 84%-100%
+    # configuration from the existing 10k checkpoint.
+    objective: maximum_likelihood
+    normalize_goal_direction: true
+    goal_feature_scale: 1.0
+    residual_scale: 1.0
+    residual_clip: null
+    history_noise_std: 0.15
+    history_dropout: 0.30

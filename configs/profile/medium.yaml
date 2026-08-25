@@ -1,0 +1,9 @@
+profile:
+  name: medium
+  seeds: [0, 1, 2]
+  image_size: [96, 96]
+  transitions: 200000
+  eval_episodes: 50
+  batch_size: 32
+  model_scale: 0.5
+

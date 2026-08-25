@@ -1,0 +1,13 @@
+baseline:
+  name: dreamerv3
+  algorithm: DreamerV3
+  implementation: external
+  observation: control_state+goal
+  model_size: small
+  jax_platform: auto
+  train_ratio: 4.0
+  batch_size: 4
+  batch_length: 8
+  train_fill: 8
+  recurrent_reset_on_episode: true
+  external_command: python -m scripts.run_dreamerv3_subprocess

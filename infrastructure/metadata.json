@@ -1,0 +1,9 @@
+{
+  "environment": "h1hand-stand-v0",
+  "algorithm": "PPO",
+  "seed": 0,
+  "environment_steps": 512,
+  "wall_clock_seconds": 9.552053194958717,
+  "shared_infrastructure": true,
+  "checkpoint": "infrastructure/h1hand_stand_ppo.zip"
+}

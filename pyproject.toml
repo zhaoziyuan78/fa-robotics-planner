@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fa-robotics-planner"
+version = "0.1.0"
+description = "FunctionAlignmentWM unified robotics planning experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+  "torch>=2.1",
+  "Pillow>=9.0",
+  "matplotlib>=3.7",
+  "imageio>=2.31",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+fetch = ["gymnasium==0.29.1", "mujoco==3.1.6"]
+humanoid = ["gymnasium==0.29.1", "mujoco==3.1.6"]
+gcrl = ["gymnasium==0.29.1", "stable-baselines3==2.3.2"]
+external-baselines = [
+  "chex==0.1.90",
+  "cloudpickle>=3.0",
+  "colored==2.2.4",
+  "einops==0.4.1",
+  "GPUtil==1.4.0",
+  "jax==0.6.2",
+  "jaxlib==0.6.2",
+  "msgpack==1.0.8",
+  "optax==0.2.2",
+  "psutil>=5.9",
+  "pyzmq==26.0.3",
+  "ruamel.yaml==0.18.6",
+  "tensorflow-probability==0.24.0",
+  "tensordict==0.4.0",
+  "termcolor==2.4.0",
+  "torchrl==0.4.0",
+]
+data = ["h5py>=3.9", "zarr>=2.16"]
+test = ["pytest>=8.0"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["integration: requires optional simulator dependencies"]

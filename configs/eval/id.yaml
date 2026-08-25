@@ -1,0 +1,17 @@
+eval:
+  name: id
+  # Five seeds x 20 episodes = 100 episodes per reported condition.
+  episodes: 20
+  seeds: [100, 101, 102, 103, 104]
+  bootstrap_samples: 10000
+  confidence: 0.95
+  show_progress: true
+  progress_update_interval: 10
+  use_action_kv_cache: true
+  state_context_length: 8
+  # auto enables BF16 for large (state_size >= 128) models and keeps small
+  # Windy/Fetch models in faster FP32.
+  mixed_precision: auto
+  mixed_precision_dtype: bfloat16
+  allow_tf32: true
+  ood_conditions: {}

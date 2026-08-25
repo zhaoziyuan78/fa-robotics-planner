@@ -1,0 +1,140 @@
+project: FunctionAlignmentWM
+seed: 2
+seeds:
+- 0
+- 1
+- 2
+- 3
+- 4
+device: cuda
+run_root: runs
+data_root: /l/users/ziyuan.zhao/fa-robotics-planner/data
+checkpoint_root: /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints
+max_transitions: null
+profile:
+  name: paper
+  episodes: 5
+  transitions: 1000
+  image_size:
+  - 96
+  - 96
+  seeds:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  prior_steps:
+    windy: 25000
+    fetch: 50000
+    humanoid_shared: 100000
+  paired_steps:
+    windy:
+    - 1000
+    - 5000
+    - 10000
+    - 25000
+    fetch:
+    - 2500
+    - 10000
+    - 25000
+    - 50000
+    humanoid:
+    - 5000
+    - 20000
+    - 50000
+    - 100000
+  eval_episodes: 100
+  batch_size: 64
+  model_scale: 1.0
+model:
+  name: FunctionAlignmentWM
+  action_prior:
+    type: transformer
+    d_model: 128
+    n_layers: 3
+    n_heads: 4
+    dropout: 0.1
+    max_length: 128
+  state_prior:
+    type: causal_video_transformer
+    d_model: 256
+    n_layers: 4
+    n_heads: 8
+    dropout: 0.1
+    max_length: 128
+    visual_dim: 128
+  state_adapter:
+    enabled: false
+    hidden_dim: 512
+    loss_mode: residual
+    legacy_direct_next_state: false
+    lambda_multi: 1.0
+    rollout_discount: 0.99
+    train_horizon: 5
+  action_adapter:
+    enabled: true
+    hidden_dim: 512
+    objective: maximum_likelihood
+  freeze_priors: true
+planner:
+  name: shooting
+  horizon: 2
+  num_candidates: 256
+  execute_steps: 1
+  discount: 0.99
+  horizon_sweep:
+  - 2
+  - 5
+  - 10
+  - 20
+  candidate_sweep:
+  - 16
+  - 64
+  - 256
+  - 1024
+env:
+  name: windy
+  image_size:
+  - 64
+  - 64
+  state_size: 4
+  proprio_size: 2
+  goal_size: 2
+  action_size: 2
+  dt: 0.1
+  episode_horizon: 100
+  gamma: 0.9
+  v_max: 1.0
+  a_max: 1.0
+  w_max: 0.6
+  k_max: 0.015
+  bounce_beta: 0.5
+  success_radius: 0.1
+  region_count: 4
+  region_w_scale: 0.6
+  edge_margin: 0.08
+  legacy_static_wind: true
+  region_colors:
+  - - 60
+    - 70
+    - 80
+  - - 70
+    - 80
+    - 70
+  - - 80
+    - 70
+    - 60
+  - - 70
+    - 60
+    - 80
+  train_ranges:
+    wind_scale:
+    - 0.0
+    - 1.0
+    slope:
+    - -0.015
+    - 0.015
+state_adapter: false
+action_adapter: true
+experiment_id: windy_ActionAdapterOnly_seed2

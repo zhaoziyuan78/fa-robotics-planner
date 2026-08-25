@@ -1,0 +1,22 @@
+baseline:
+  name: dino_wm
+  algorithm: DINO-WM
+  implementation: subprocess
+  environment: dino-wm
+  observation: dinov2_rgb_patches+control_state+goal
+  append_proprio_for_humanoid: true
+  integration_strategy: migrate_model_keep_modern_env
+  source_path: ~/.tmp/dino_wm-official
+  external_command: python -m scripts.run_dino_wm_subprocess
+  batch_size: 8
+  # Cover the complete offline dataset each epoch. The old fixed value of four
+  # updates trained on at most 16 transitions regardless of data budget.
+  epochs: 5
+  gradient_updates: null
+  learning_rate: 0.0005
+  horizon: 2
+  num_samples: 4
+  topk: 2
+  var_scale: 0.5
+  opt_steps: 1
+  proprio_alpha: 10.0

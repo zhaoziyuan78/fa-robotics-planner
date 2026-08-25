@@ -1,0 +1,16 @@
+baseline:
+  name: gcrl
+  algorithm: GC-SAC
+  observation: goalenv_control_state+achieved_goal+desired_goal
+  implementation: stable_baselines3
+  her_tasks: [windy, fetch_slide, fetch_push, humanoid_reach, humanoid_push]
+  # Lower bound. HER automatically raises this to episode_horizon + 1 so the
+  # replay buffer contains a complete episode before its first sample.
+  learning_starts: 100
+  # null retains all transitions in each short-budget run.  This prevents an
+  # SB3 HER edge case where buffer wrap-around temporarily invalidates every
+  # complete episode and raises a misleading first-episode sampling error.
+  buffer_size: null
+  batch_size: 256
+  checkpoint_interval: 10000
+  external_command: null

@@ -1,0 +1,167 @@
+project: FunctionAlignmentWM
+seed: 0
+seeds:
+- 0
+- 1
+- 2
+- 3
+- 4
+device: cuda
+run_root: runs
+data_root: /l/users/ziyuan.zhao/fa-robotics-planner/data
+checkpoint_root: /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints
+max_transitions: null
+profile:
+  name: paper
+  episodes: 5
+  transitions: 1000
+  image_size:
+  - 96
+  - 96
+  seeds:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  prior_steps:
+    windy: 25000
+    fetch: 50000
+    humanoid_shared: 100000
+  paired_steps:
+    windy:
+    - 1000
+    - 5000
+    - 10000
+    - 25000
+    fetch:
+    - 2500
+    - 10000
+    - 25000
+    - 50000
+    humanoid:
+    - 5000
+    - 20000
+    - 50000
+    - 100000
+  eval_episodes: 100
+  batch_size: 64
+  model_scale: 1.0
+model:
+  name: FunctionAlignmentWM
+  action_prior:
+    type: transformer
+    d_model: 128
+    n_layers: 3
+    n_heads: 4
+    dropout: 0.1
+    max_length: 128
+  state_prior:
+    type: causal_video_transformer
+    d_model: 256
+    n_layers: 4
+    n_heads: 8
+    dropout: 0.1
+    max_length: 128
+    visual_dim: 128
+  state_adapter:
+    enabled: false
+    hidden_dim: 512
+    loss_mode: residual
+    legacy_direct_next_state: false
+    lambda_multi: 1.0
+    rollout_discount: 0.99
+    train_horizon: 5
+  action_adapter:
+    enabled: true
+    hidden_dim: 512
+    objective: maximum_likelihood
+  freeze_priors: true
+planner:
+  name: shooting
+  horizon: 2
+  num_candidates: 256
+  execute_steps: 1
+  discount: 0.99
+  horizon_sweep:
+  - 2
+  - 5
+  - 10
+  - 20
+  candidate_sweep:
+  - 16
+  - 64
+  - 256
+  - 1024
+env:
+  name: humanoid_stand
+  env_id: h1hand-stand-v0
+  image_size:
+  - 96
+  - 96
+  state_size: 512
+  action_size: 61
+  goal_size: 0
+  episode_horizon: 500
+  residual_scale: 0.25
+  nominal_observation_size: 151
+  passive:
+    friction_multiplier:
+    - 0.8
+    - 1.2
+    damping_multiplier:
+    - 0.9
+    - 1.1
+    actuator_strength_multiplier:
+    - 0.9
+    - 1.1
+    impulse_std: 0.05
+  state_indices:
+    proprio: []
+    torso_height: []
+    upright: []
+    joint_velocity: []
+    root_velocity: []
+    fall: []
+    goal: []
+    achieved_goal: []
+  scorer:
+    indices:
+      proprio: []
+      torso_height: []
+      upright: []
+      joint_velocity: []
+      root_velocity: []
+      fall: []
+      goal: []
+      achieved_goal: []
+    slices:
+      torso_height:
+      - 2
+      - 3
+      joint_velocity:
+      - 76
+      - 151
+      root_velocity:
+      - 76
+      - 79
+    fall_height: 0.2
+    weights:
+      height: 1.0
+      upright: 1.0
+      velocity: 0.01
+      fall: 10.0
+      control: 0.001
+  train_ranges:
+    friction_multiplier:
+    - 0.8
+    - 1.2
+    damping_multiplier:
+    - 0.9
+    - 1.1
+    actuator_strength_multiplier:
+    - 0.9
+    - 1.1
+state_adapter: false
+action_adapter: true
+experiment_id: humanoid_stand_ActionAdapterOnly_seed0

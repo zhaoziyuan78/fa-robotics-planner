@@ -1,0 +1,25 @@
+eval:
+  name: ood
+  # Five seeds x 20 episodes = 100 episodes per reported condition.
+  episodes: 20
+  seeds: [100, 101, 102, 103, 104]
+  bootstrap_samples: 10000
+  confidence: 0.95
+  show_progress: true
+  progress_update_interval: 10
+  use_action_kv_cache: true
+  state_context_length: 8
+  # auto enables BF16 for large (state_size >= 128) models and keeps small
+  # Windy/Fetch models in faster FP32.
+  mixed_precision: auto
+  mixed_precision_dtype: bfloat16
+  allow_tf32: true
+  ood_conditions:
+    high_wind: {wind_scale: 1.4, wind_cap_multiplier: 1.4}
+    slope_reversal: {slope: 0.025, reverse_slope_at: 50}
+    unseen_quadrant: {wind_quadrant: 4}
+    heavy_low_friction: {mass_multiplier: 1.4, friction_multiplier: 0.5}
+    light_high_friction: {mass_multiplier: 0.6, friction_multiplier: 1.5}
+    low_friction_humanoid: {friction_multiplier: 0.6}
+    high_damping_humanoid: {damping_multiplier: 1.25}
+    weak_actuator_humanoid: {actuator_strength_multiplier: 0.8}

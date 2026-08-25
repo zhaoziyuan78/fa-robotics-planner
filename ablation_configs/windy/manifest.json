@@ -1,0 +1,102 @@
+[
+  {
+    "name": "Full",
+    "seed": 0,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_Full_seed0.yaml"
+  },
+  {
+    "name": "Full",
+    "seed": 1,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_Full_seed1.yaml"
+  },
+  {
+    "name": "Full",
+    "seed": 2,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_Full_seed2.yaml"
+  },
+  {
+    "name": "Full",
+    "seed": 3,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_Full_seed3.yaml"
+  },
+  {
+    "name": "Full",
+    "seed": 4,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_Full_seed4.yaml"
+  },
+  {
+    "name": "StateAdapterOnly",
+    "seed": 0,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_StateAdapterOnly_seed0.yaml"
+  },
+  {
+    "name": "StateAdapterOnly",
+    "seed": 1,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_StateAdapterOnly_seed1.yaml"
+  },
+  {
+    "name": "StateAdapterOnly",
+    "seed": 2,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_StateAdapterOnly_seed2.yaml"
+  },
+  {
+    "name": "StateAdapterOnly",
+    "seed": 3,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_StateAdapterOnly_seed3.yaml"
+  },
+  {
+    "name": "StateAdapterOnly",
+    "seed": 4,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_StateAdapterOnly_seed4.yaml"
+  },
+  {
+    "name": "ActionAdapterOnly",
+    "seed": 0,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_ActionAdapterOnly_seed0.yaml"
+  },
+  {
+    "name": "ActionAdapterOnly",
+    "seed": 1,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_ActionAdapterOnly_seed1.yaml"
+  },
+  {
+    "name": "ActionAdapterOnly",
+    "seed": 2,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_ActionAdapterOnly_seed2.yaml"
+  },
+  {
+    "name": "ActionAdapterOnly",
+    "seed": 3,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_ActionAdapterOnly_seed3.yaml"
+  },
+  {
+    "name": "ActionAdapterOnly",
+    "seed": 4,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_ActionAdapterOnly_seed4.yaml"
+  },
+  {
+    "name": "PriorsOnly",
+    "seed": 0,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_PriorsOnly_seed0.yaml"
+  },
+  {
+    "name": "PriorsOnly",
+    "seed": 1,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_PriorsOnly_seed1.yaml"
+  },
+  {
+    "name": "PriorsOnly",
+    "seed": 2,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_PriorsOnly_seed2.yaml"
+  },
+  {
+    "name": "PriorsOnly",
+    "seed": 3,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_PriorsOnly_seed3.yaml"
+  },
+  {
+    "name": "PriorsOnly",
+    "seed": 4,
+    "config": "/home/ziyuan.zhao/fa-robotics-planner/ablation_configs/windy/windy_PriorsOnly_seed4.yaml"
+  }
+]

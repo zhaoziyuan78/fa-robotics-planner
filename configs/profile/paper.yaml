@@ -1,0 +1,21 @@
+profile:
+  name: paper
+  seeds: [0, 1, 2, 3, 4]
+  image_size: [96, 96]
+  prior_steps:
+    windy_state: 100000
+    windy_action: 25000
+    fetch_state: 50000
+    fetch_action: 50000
+    humanoid_shared_state: 50000
+    humanoid_shared_action: 50000
+  paired_steps:
+    windy: [1000, 5000, 10000, 30000]
+    fetch: [1000, 2500, 5000, 10000]
+    humanoid_stand: [1000, 2000]
+    humanoid_other: [1000, 2000, 5000, 10000]
+  eval_seeds: [100, 101, 102, 103, 104]
+  eval_episodes_per_seed: 20
+  eval_episodes_total: 100
+  batch_size: 64
+  model_scale: 1.0

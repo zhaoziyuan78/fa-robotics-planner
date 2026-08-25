@@ -1,0 +1,28 @@
+env:
+  name: humanoid_shared
+  image_size: [96, 96]
+  state_size: 512
+  proprio_size: 151
+  proprio_slice: [0, 151]
+  action_size: 61
+  goal_size: 0
+  task_sampling: {stand: 0.25, balance: 0.25, reach: 0.25, push: 0.25}
+
+model:
+  state_prior:
+    # The previous implicit 2e-4 rate was still improving after 300 epochs.
+    # Start faster, then reduce only when held-out loss plateaus.
+    learning_rate: 0.002
+    scheduler:
+      name: reduce_on_plateau
+      factor: 0.5
+      patience: 8
+      threshold: 0.001
+      cooldown: 0
+      min_lr: 0.000001
+    early_stopping:
+      enabled: true
+      patience: 30
+      min_delta: 0.001
+      warmup_epochs: 20
+      restore_best: true

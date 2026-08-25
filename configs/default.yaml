@@ -1,0 +1,26 @@
+project: FunctionAlignmentWM
+seed: 0
+seeds: [0, 1, 2, 3, 4]
+device: cuda
+run_root: runs
+data_root: /l/users/ziyuan.zhao/fa-robotics-planner/data
+checkpoint_root: /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints
+# HumanoidBench's released low-level reaching controller is substantially more
+# stable on H1Hand than the generic 61-D PPO trained by the infrastructure
+# script.  It remains task-independent at evaluation by holding the reset hand
+# position; task targets are exposed only to offline expert data generation.
+humanoid_nominal_controller:
+  type: reach
+  checkpoint: /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_reach_nominal.pt
+  mean: /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_reach_mean.npy
+  variance: /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_reach_variance.npy
+max_transitions: null
+eval:
+  # Bound State-Prior activation memory without reducing the number of
+  # candidates. auto uses 64 candidates/batch for Fetch and 16 for Humanoid.
+  candidate_batch_size: auto
+profile:
+  name: debug
+  episodes: 5
+  transitions: 1000
+  image_size: [64, 64]
