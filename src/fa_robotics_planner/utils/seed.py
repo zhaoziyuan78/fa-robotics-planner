@@ -25,14 +25,9 @@ def seed_everything(seed: int, env: Any | None = None, deterministic: bool = Tru
             torch.backends.cudnn.benchmark = False
     except ImportError:
         pass
-    try:
-        import jax
-
-        # JAX uses explicit keys; retain a documented seed for adapters that
-        # create their own key rather than mutating non-existent global state.
-        _ = jax.random.PRNGKey(seed)
-    except ImportError:
-        pass
+    # JAX has no mutable global random state: callers must construct keys from
+    # this seed themselves. Importing it here cannot seed later computations
+    # and needlessly loads the JAX CUDA runtime in otherwise PyTorch processes.
     if env is not None:
         if hasattr(env, "reset"):
             env.reset(seed=seed)

@@ -9,6 +9,20 @@ import numpy as np
 from fa_robotics_planner.envs.unified import ObservationBundle, UnifiedControlEnv
 
 
+def resolve_task_setting(
+    baseline_config: Mapping[str, object],
+    environment: str,
+    name: str,
+    default: object,
+) -> object:
+    """Resolve ``name_by_task[environment]`` before the shared default."""
+
+    task_overrides = baseline_config.get(f"{name}_by_task", {})
+    if isinstance(task_overrides, Mapping) and environment in task_overrides:
+        return task_overrides[environment]
+    return baseline_config.get(name, default)
+
+
 def flatten_observation(observation: ObservationBundle) -> np.ndarray:
     """Return a non-redundant public state view for vector baselines.
 
@@ -24,6 +38,31 @@ def flatten_observation(observation: ObservationBundle) -> np.ndarray:
             observation.goal,
         )
     ).astype(np.float32, copy=False)
+
+
+def resolve_training_reward_mode(
+    baseline_config: Mapping[str, object], environment: str
+) -> str:
+    """Resolve the reward exposed while an online baseline is training.
+
+    Sparse success-only rewards are a particularly poor diagnostic for short
+    online-control runs: a learner that has never reached the goal receives an
+    all-zero replay buffer.  Baselines can therefore opt individual tasks into
+    a goal-distance reward computed solely from the public achieved and desired
+    goals.  Evaluation always constructs an adapter in ``native`` mode.
+    """
+
+    mode = str(
+        resolve_task_setting(
+            baseline_config, environment, "training_reward", "native"
+        )
+    )
+    if mode not in {"native", "dense_goal", "goal_progress"}:
+        raise ValueError(
+            "Unknown baseline training reward "
+            f"{mode!r}; expected native, dense_goal, or goal_progress"
+        )
+    return mode
 
 
 class FlatObservationEnvAdapter:
@@ -42,6 +81,8 @@ class FlatObservationEnvAdapter:
         record_video_path: str | None = None,
         record_method: str = "baseline",
         record_task: str = "task",
+        reward_mode: str = "native",
+        goal_progress_scale: float = 1.0,
     ):
         import gymnasium as gym
 
@@ -56,6 +97,19 @@ class FlatObservationEnvAdapter:
                 self._record_video_path = record_video_path
                 self._record_method = str(record_method)
                 self._record_task = str(record_task)
+                self.reward_mode = str(reward_mode)
+                if self.reward_mode not in {
+                    "native",
+                    "dense_goal",
+                    "goal_progress",
+                }:
+                    raise ValueError(
+                        "reward_mode must be native, dense_goal, or goal_progress"
+                    )
+                self.goal_progress_scale = float(goal_progress_scale)
+                if self.goal_progress_scale <= 0:
+                    raise ValueError("goal_progress_scale must be positive")
+                self._previous_goal_distance: float | None = None
                 self._recorded_video = False
                 self._video_frames: list[np.ndarray] = []
                 self._video_metrics: list[dict[str, object]] = []
@@ -87,6 +141,13 @@ class FlatObservationEnvAdapter:
                     self._next_seed = seed + 1
                 self._step = 0
                 observation = self.unified.reset(int(seed))
+                achieved = np.asarray(self.unified.get_achieved_goal(), np.float32)
+                desired = np.asarray(self.unified.get_goal(), np.float32)
+                self._previous_goal_distance = (
+                    float(np.linalg.norm(achieved - desired))
+                    if achieved.size and achieved.shape == desired.shape
+                    else None
+                )
                 if self._record_video_path and not self._recorded_video:
                     self._video_seed = int(seed)
                     self._video_frames = [self.unified.render().copy()]
@@ -101,6 +162,7 @@ class FlatObservationEnvAdapter:
                 )
                 info = dict(result.info)
                 success = float(info.get("success", info.get("is_success", False)))
+                native_reward = float(result.reward)
                 info.update(
                     success=success,
                     is_success=success,
@@ -109,8 +171,27 @@ class FlatObservationEnvAdapter:
                 )
                 achieved = np.asarray(self.unified.get_achieved_goal(), np.float32)
                 desired = np.asarray(self.unified.get_goal(), np.float32)
+                reward = native_reward
                 if achieved.size and achieved.shape == desired.shape:
-                    info["goal_distance"] = float(np.linalg.norm(achieved - desired))
+                    goal_distance = float(np.linalg.norm(achieved - desired))
+                    info["goal_distance"] = goal_distance
+                    if self.reward_mode == "dense_goal":
+                        reward = -goal_distance
+                    elif self.reward_mode == "goal_progress":
+                        if self._previous_goal_distance is None:
+                            raise RuntimeError(
+                                "goal_progress reward has no reset distance"
+                            )
+                        reward = self.goal_progress_scale * (
+                            self._previous_goal_distance - goal_distance
+                        ) + native_reward
+                    self._previous_goal_distance = goal_distance
+                elif self.reward_mode in {"dense_goal", "goal_progress"}:
+                    raise ValueError(
+                        "dense_goal reward requires matching non-empty achieved and desired goals"
+                    )
+                info["native_reward"] = native_reward
+                info["training_reward"] = float(reward)
                 if self._record_video_path and not self._recorded_video:
                     self._video_frames.append(self.unified.render().copy())
                     self._video_metrics.append(
@@ -131,7 +212,7 @@ class FlatObservationEnvAdapter:
                         self._recorded_video = True
                 return (
                     flatten_observation(result.observation),
-                    float(result.reward),
+                    float(reward),
                     bool(result.terminated),
                     truncated,
                     info,

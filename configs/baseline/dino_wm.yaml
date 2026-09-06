@@ -2,21 +2,48 @@ baseline:
   name: dino_wm
   algorithm: DINO-WM
   implementation: subprocess
+  offline_only: true
+  data: null
   environment: dino-wm
-  observation: dinov2_rgb_patches+control_state+goal
+  observation: dinov2_rgb_patches+control_state;goal_target_only
   append_proprio_for_humanoid: true
   integration_strategy: migrate_model_keep_modern_env
   source_path: ~/.tmp/dino_wm-official
   external_command: python -m scripts.run_dino_wm_subprocess
+  # Restore the released DINO-WM temporal contract. The former 1-frame,
+  # 1-layer, 4-head, 512-wide predictor was a debug model. The paper model is
+  # 6x16x2048; 3x6x1024 is the measured RTX-5000 adaptation rather than an H100
+  # configuration that takes about 11 seconds for every environment step.
+  history_frames: 3
+  predictor_depth: 3
+  predictor_heads: 6
+  predictor_mlp_dim: 1024
+  predictor_dropout: 0.1
   batch_size: 8
-  # Cover the complete offline dataset each epoch. The old fixed value of four
-  # updates trained on at most 16 transitions regardless of data budget.
-  epochs: 5
+  # Three complete passes expose roughly as many RGB frames as the previous
+  # five-epoch one-step run while fitting the 32 GiB RTX 5000. Each sample now
+  # contains four consecutive observations rather than an isolated pair.
+  epochs: 3
   gradient_updates: null
   learning_rate: 0.0005
-  horizon: 2
-  num_samples: 4
-  topk: 2
-  var_scale: 0.5
-  opt_steps: 1
-  proprio_alpha: 10.0
+  # Keep the structured projection full-rank. Jointly optimizing this linear
+  # target allowed a low-loss collapsed token that CEM could not decode.
+  train_proprio_encoder: false
+  proprio_loss_weight: 10.0
+  structured_state_loss_weight: 1.0
+  grad_clip: 1.0
+  horizon: 5
+  # control_state is Markov; consecutive histories remain a training signal,
+  # while MPC retains the newest latent to avoid quadratic redundant context.
+  planning_history_frames: 1
+  # The official values (300 samples, 30 refinements) target an H100. This is a
+  # bounded RTX-5000 setting; RGB encodings are cached across all candidates.
+  num_samples: 32
+  topk: 8
+  var_scale: 1.0
+  opt_steps: 3
+  proprio_alpha: 25.0
+  planning_objective: structured_goal
+  planning_objective_by_task:
+    windy: kinematic_goal
+  planning_visual_weight: 0.0

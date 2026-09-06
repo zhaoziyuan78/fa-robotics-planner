@@ -56,9 +56,11 @@ class WindyControlEnv(UnifiedControlEnv):
             goal=self.goal.copy(),
         )
 
-    def reset(self, seed: int = 0) -> ObservationBundle:
+    def reset(self, seed: int = 0, start_mode: str | None = None) -> ObservationBundle:
         self._rng = np.random.default_rng(int(seed))
-        start_mode = self._ood.get("start_mode", self.config.get("start_mode", "edge"))
+        start_mode = start_mode or self._ood.get(
+            "start_mode", self.config.get("start_mode", "edge")
+        )
         if start_mode == "edge":
             position = np.array(
                 [self._rng.uniform(-0.8, 0.8), 1.0 - self.edge_margin], np.float32
@@ -120,11 +122,14 @@ class WindyControlEnv(UnifiedControlEnv):
         self.t += 1
         distance = float(np.linalg.norm(position - self.goal))
         success = distance <= self.success_radius
+        terminate_on_success = bool(
+            getattr(self, "terminate_on_success", True)
+        )
         return StepResult(
             self._bundle(),
             reward=float(success),
-            terminated=bool(success),
-            truncated=self.t >= self.horizon and not success,
+            terminated=bool(success and terminate_on_success),
+            truncated=self.t >= self.horizon and not (success and terminate_on_success),
             info={"success": success, "distance": distance, "wind": wind.copy()},
         )
 
@@ -150,4 +155,3 @@ class WindyControlEnv(UnifiedControlEnv):
 
     def set_ood_parameters(self, config: Mapping[str, Any]) -> None:
         self._ood = dict(config)
-

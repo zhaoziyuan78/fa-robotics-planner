@@ -16,8 +16,12 @@ humanoid_nominal_controller:
   variance: /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_reach_variance.npy
 max_transitions: null
 eval:
+  # Planning compute is a task-level constant. It never changes with the
+  # amount of paired training data used by a checkpoint.
+  fixed_planner_budget: true
   # Bound State-Prior activation memory without reducing the number of
-  # candidates. auto uses 64 candidates/batch for Fetch and 16 for Humanoid.
+  # candidates. One-step planners and FetchPush on the 32 GiB RTX 5000 Ada use
+  # one full batch; other H>1 Fetch/Humanoid tasks retain bounded auto batches.
   candidate_batch_size: auto
 profile:
   name: debug

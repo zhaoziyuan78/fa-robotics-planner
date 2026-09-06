@@ -9,6 +9,7 @@ from fa_robotics_planner.data import DatasetKind, EpisodeWriter, LazyEpisodeData
 from fa_robotics_planner.data.generate import generate_episode
 from fa_robotics_planner.data.schemas import validate_episode
 from fa_robotics_planner.envs.unified import ObservationBundle, StepResult
+from fa_robotics_planner.models.vqvae import VQVAE
 from scripts import train_prior
 from scripts.train_prior import _EarlyStopper
 
@@ -94,6 +95,7 @@ def test_action_prior_training_preserves_loss_history(tmp_path, monkeypatch):
             "--output",
             str(output),
             "env=windy",
+            "env.image_size=[8,8]",
             "device=cpu",
             "epochs=1",
             "batch_size=2",
@@ -124,6 +126,20 @@ def test_state_prior_scheduler_early_stop_and_best_restore(tmp_path, monkeypatch
     for episode_id in range(20):
         writer.write(episode_id, state_episode(episode_id))
 
+    token_data = tmp_path / "state_tokens"
+    token_writer = EpisodeWriter(token_data, DatasetKind.TOKENS)
+    for episode_id in range(20):
+        token_writer.write(
+            episode_id,
+            {
+                "video_tokens": np.zeros((4, 1, 1), np.int64),
+                "sequence_length": np.asarray(4, np.int64),
+            },
+        )
+    vqvae = tmp_path / "vqvae.pt"
+    tokenizer = VQVAE(hidden_dim=16, codebook_size=16, code_dim=8)
+    torch.save({"kind": "vqvae", "tokenizer": tokenizer.state_dict()}, vqvae)
+
     output = tmp_path / "state_prior.pt"
     monkeypatch.setattr(
         sys,
@@ -136,14 +152,27 @@ def test_state_prior_scheduler_early_stop_and_best_restore(tmp_path, monkeypatch
             str(data),
             "--output",
             str(output),
+            "--tokens",
+            str(token_data),
+            "--vqvae",
+            str(vqvae),
             "env=windy",
+            "env.image_size=[8,8]",
             "device=cpu",
             "epochs=10",
             "batch_size=4",
-            "model.state_prior.d_model=16",
-            "model.state_prior.n_layers=1",
-            "model.state_prior.n_heads=2",
-            "model.state_prior.visual_dim=0",
+            "model.tokenizer.hidden_dim=16",
+            "model.tokenizer.codebook_size=16",
+            "model.tokenizer.code_dim=8",
+            "model.state_prior.video.d_model=16",
+            "model.state_prior.video.n_layers=1",
+            "model.state_prior.video.n_heads=2",
+            "model.state_prior.video.d_ff=32",
+            "model.state_prior.observation.d_model=16",
+            "model.state_prior.observation.n_layers=1",
+            "model.state_prior.observation.n_heads=2",
+            "model.state_prior.training.observation_warmup_epochs=0",
+            "model.state_prior.training.video_warmup_epochs=0",
             "model.state_prior.learning_rate=0.001",
             "model.state_prior.scheduler.name=reduce_on_plateau",
             "model.state_prior.scheduler.patience=0",
@@ -158,13 +187,13 @@ def test_state_prior_scheduler_early_stop_and_best_restore(tmp_path, monkeypatch
     train_prior.main()
 
     checkpoint = torch.load(output, map_location="cpu", weights_only=False)
-    summary = checkpoint["training_summary"]
+    summary = checkpoint["training_summary"]["phases"][-1]
     assert summary["early_stopped"] is True
     assert summary["epochs_completed"] == 3
     assert summary["best_epoch"] == 1
     assert summary["restored_best_weights"] is True
-    assert len(checkpoint["history"]["val_state_prior"]) == 3
-    assert checkpoint["history"]["learning_rate"][-1] < 0.001
+    assert len(checkpoint["history"]["state_prior"]) == 3
+    assert summary["final_learning_rate"] < 0.001
 
 
 class _SuccessfulNonTerminatingEnv:

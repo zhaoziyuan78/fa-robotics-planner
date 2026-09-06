@@ -18,14 +18,17 @@ from .train_adapters import _load_priors
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True)
+    parser.add_argument("--tokens", required=True)
     parser.add_argument("--state-prior", required=True)
     parser.add_argument("--action-prior", required=True)
     parser.add_argument("--adapters", required=True)
     args, unknown = parser.parse_known_args()
     config = config_from_unknown(["model=prior_adapter", *unknown])
     dataset = LazyEpisodeDataset(args.data, split="val", seed=int(config.get("seed", 0)))
+    token_dataset = LazyEpisodeDataset(args.tokens, split="val", seed=int(config.get("seed", 0)))
+    if [entry["id"] for entry in dataset.entries] != [entry["id"] for entry in token_dataset.entries]:
+        raise ValueError("Observation/token validation episode IDs differ")
     sample = dataset[0]
-    config["env"]["proprio_size"] = int(sample["proprio"].shape[-1])
     method = build_method(config)
     _load_priors(method, Path(args.state_prior), Path(args.action_prior))
     checkpoint = torch.load(args.adapters, map_location="cpu", weights_only=False)
@@ -37,22 +40,37 @@ def main() -> None:
     squared = {name: [] for name in ("passive", "adapted", "intervention", "action")}
     action_scale = []
     with torch.inference_mode():
-        for episode in dataset:
+        for index, episode in enumerate(dataset):
+            token_episode = token_dataset[index]
             state = torch.as_tensor(episode["control_state"], device=device)
             mask = torch.as_tensor(episode["state_mask"], device=device)
             next_state = torch.as_tensor(episode["next_control_state"], device=device)
             action = torch.as_tensor(episode["actions"], device=device)
             goal = torch.as_tensor(episode["goals"], device=device)
-            proprio = torch.as_tensor(episode["proprio"], device=device)
-            rgb = torch.as_tensor(episode["rgb"], device=device)
-            valid = torch.ones(1, state.size(0), dtype=torch.bool, device=device)
-            visual = method.visual_encoder(rgb.unsqueeze(0)) if method.visual_encoder else None
+            video = torch.as_tensor(token_episode["video_tokens"], device=device)
+            next_video = torch.as_tensor(token_episode["next_video_tokens"], device=device)
+            valid = torch.ones(1, state.size(0) + 1, dtype=torch.bool, device=device)
             prior = method.state_prior(
-                state.unsqueeze(0), mask.unsqueeze(0), proprio.unsqueeze(0), visual, valid
+                torch.cat((state, next_state[-1:]), 0).unsqueeze(0),
+                torch.cat(
+                    (
+                        mask,
+                        torch.as_tensor(
+                            episode["next_state_mask"][-1:], device=device
+                        ),
+                    ),
+                    0,
+                ).unsqueeze(0),
+                torch.cat((video, next_video[-1:]), 0).unsqueeze(0),
+                valid,
             )
             passive = prior.passive_next.squeeze(0)
-            adapted, _ = method.state_adapter(
-                state, passive, action, prior.hidden.squeeze(0)
+            adapted, _, _ = method.state_adapter(
+                state,
+                passive,
+                action,
+                prior.hidden.squeeze(0),
+                prior.video_summary[:, :-1].squeeze(0),
             )
             squared["passive"].append((passive - next_state).square())
             squared["adapted"].append((adapted - next_state).square())

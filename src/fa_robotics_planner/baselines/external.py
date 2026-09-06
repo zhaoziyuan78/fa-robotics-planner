@@ -1,4 +1,4 @@
-"""Auditable subprocess boundary for DreamerV3, TD-MPC2, and DINO-WM."""
+"""Auditable subprocess boundary for the official DINO-WM integration."""
 
 from __future__ import annotations
 

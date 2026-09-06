@@ -29,10 +29,12 @@ def main() -> None:
             continue
         env, planner = config.get("env", {}), config.get("planner", {})
         baseline = config.get("baseline", {})
-        environment_steps = config.get("environment_steps", metadata.get("paired_steps", 0))
-        paired_steps = metadata.get("paired_steps", 0)
-        if baseline.get("name") == "dino_wm":
-            paired_steps = environment_steps
+        if baseline.get("algorithm") in {"DreamerV3", "TD-MPC2", "GC-SAC"}:
+            continue
+        if baseline and baseline.get("offline_only") is not True:
+            continue
+        environment_steps = int(summary.get("training_environment_steps", 0))
+        paired_steps = int(summary.get("offline_transitions", metadata.get("paired_steps", 0)))
         methods[run.name] = {
             "environment_steps": environment_steps,
             "paired_steps": paired_steps,

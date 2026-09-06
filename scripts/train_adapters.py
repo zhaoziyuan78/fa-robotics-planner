@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 
 from fa_robotics_planner.data import LazyEpisodeDataset
 from fa_robotics_planner.models.builders import build_method
@@ -24,6 +25,7 @@ from fa_robotics_planner.visualization import (
 )
 
 from ._common import checkpoint_path, config_from_unknown, data_path
+from .train_prior import _StateTokenDataset
 
 
 def _bool(value) -> bool:
@@ -32,43 +34,21 @@ def _bool(value) -> bool:
 
 def _load_priors(method, state_path: Path, action_path: Path) -> None:
     state_checkpoint = torch.load(state_path, map_location="cpu", weights_only=False)
-    checkpoint_state_config = (
-        state_checkpoint.get("config", {}).get("model", {}).get("state_prior", {})
-    )
-    checkpoint_normalizes_visual = bool(
-        checkpoint_state_config.get("normalize_visual", False)
-    )
-    if (
-        method.state_prior.visual_dim
-        and checkpoint_normalizes_visual != method.state_prior.normalize_visual
+    if int(state_checkpoint.get("architecture_version", 0)) != int(
+        method.state_prior.architecture_version
     ):
         raise ValueError(
-            f"State Prior checkpoint {state_path} uses normalize_visual="
-            f"{checkpoint_normalizes_visual}, but the current model uses "
-            f"normalize_visual={method.state_prior.normalize_visual}. Retrain the "
-            "State Prior and its dependent adapters with the current config."
-        )
-    checkpoint_uses_residual_prediction = bool(
-        checkpoint_state_config.get("residual_prediction", False)
-    )
-    if checkpoint_uses_residual_prediction != method.state_prior.residual_prediction:
-        raise ValueError(
-            f"State Prior checkpoint {state_path} uses residual_prediction="
-            f"{checkpoint_uses_residual_prediction}, but the current model uses "
-            f"residual_prediction={method.state_prior.residual_prediction}. Retrain "
-            "the State Prior and its dependent adapters with the current config."
+            f"State Prior checkpoint {state_path} predates the discrete dual-prior "
+            "architecture. Retrain VQ-VAE, tokenize frames, and retrain State Prior."
         )
     state = state_checkpoint["state"]
     method.state_prior.load_state_dict(state["state_prior"])
-    if method.visual_encoder is not None and state.get("visual_encoder") is not None:
-        method.visual_encoder.load_state_dict(state["visual_encoder"])
+    if method.tokenizer is None or state.get("tokenizer") is None:
+        raise ValueError(f"State Prior checkpoint {state_path} has no bundled VQ-VAE")
+    method.tokenizer.load_state_dict(state["tokenizer"])
     action_checkpoint = torch.load(action_path, map_location="cpu", weights_only=False)
     method.action_prior.load_state_dict(action_checkpoint["state"])
     method.freeze_priors()
-    if method.visual_encoder is not None:
-        method.visual_encoder.eval()
-        for parameter in method.visual_encoder.parameters():
-            parameter.requires_grad = False
 
 
 def _multistep_state_loss(
@@ -78,8 +58,8 @@ def _multistep_state_loss(
     next_states,
     next_masks,
     actions,
-    proprio,
-    visual,
+    video_tokens,
+    next_video_tokens,
     horizon,
     discount,
     start=0,
@@ -98,30 +78,22 @@ def _multistep_state_loss(
     # short true-observation prefix before every imagined rollout.
     state_context = states[context_start : start + 1].unsqueeze(0)
     mask_context = masks[context_start : start + 1].unsqueeze(0)
-    proprio_context = (
-        proprio[context_start : start + 1].unsqueeze(0)
-        if method.state_prior.proprio_dim
-        else None
-    )
-    visual_context = (
-        visual[:, context_start : start + 1] if visual is not None else None
-    )
+    video_context = video_tokens[context_start : start + 1].unsqueeze(0)
     total = states.new_zeros(())
     for offset in range(horizon):
         valid = torch.ones(1, state_context.size(1), dtype=torch.bool, device=states.device)
-        prior = method.state_prior(
+        prior = method.state_prior.encode_context(
             state_context,
             mask_context,
-            proprio_context,
-            visual_context,
+            video_context,
             valid,
-            position_offset=context_start,
         )
-        predicted, _ = method.state_adapter(
+        predicted, _, condition = method.state_adapter(
             state_context[:, -1],
-            prior.passive_next[:, -1],
+            prior.passive_next,
             actions[start + offset : start + offset + 1],
-            prior.hidden[:, -1],
+            prior.observation_hidden,
+            prior.video_summary,
         )
         if offset >= 1:
             total = total + float(discount) ** offset * masked_state_loss(
@@ -138,10 +110,17 @@ def _multistep_state_loss(
             ),
             1,
         )
-        if proprio_context is not None:
-            proprio_context = torch.cat((proprio_context, prior.proprio_next[:, -1:].detach()), 1)
-        if visual_context is not None:
-            visual_context = torch.cat((visual_context, prior.visual_next[:, -1:].detach()), 1)
+        def adapt(logits, token_hidden, spatial_index):
+            return method.state_adapter.adapt_video_logits(
+                logits, token_hidden, spatial_index, condition
+            )[0]
+
+        predicted_tokens, _, _ = method.state_prior.generate_next_video(
+            prior.video_cache,
+            prior.observation_hidden,
+            logit_adapter=adapt,
+        )
+        video_context = torch.cat((video_context, predicted_tokens[:, None]), 1)
     return total
 
 
@@ -166,6 +145,7 @@ def _state_dimension_weights(config, device: torch.device) -> torch.Tensor:
 def _save_adapter_diagnostics(
     method,
     episode: dict[str, np.ndarray],
+    token_episode: dict[str, np.ndarray] | None,
     device: torch.device,
     output_directory: Path,
     state_enabled: bool,
@@ -178,7 +158,7 @@ def _save_adapter_diagnostics(
     maximum = min(
         len(episode["actions"]),
         int(method.action_prior.max_length),
-        int(method.state_prior.max_length),
+        int(method.state_prior.context_frames),
     )
     if maximum <= 0:
         return {}
@@ -189,25 +169,54 @@ def _save_adapter_diagnostics(
     metrics: dict[str, float] = {}
     output_directory.mkdir(parents=True, exist_ok=True)
     if state_enabled:
-        proprio = torch.as_tensor(episode["proprio"][:maximum], device=device)
-        visual = None
-        if method.visual_encoder is not None:
-            rgb = torch.as_tensor(episode["rgb"][:maximum], device=device)
-            visual = method.visual_encoder(rgb.unsqueeze(0))
-        valid = torch.ones(1, maximum, dtype=torch.bool, device=device)
+        if token_episode is None:
+            current_tokens = method.tokenizer.encode(
+                torch.as_tensor(episode["rgb"][:maximum], device=device)
+            )
+            next_tokens = method.tokenizer.encode(
+                torch.as_tensor(episode["next_rgb"][:maximum], device=device)
+            )
+        else:
+            current_tokens = torch.as_tensor(
+                token_episode["video_tokens"][:maximum], device=device
+            )
+            next_tokens = torch.as_tensor(
+                token_episode["next_video_tokens"][:maximum], device=device
+            )
+        actual = torch.as_tensor(
+            episode["next_control_state"][:maximum], device=device
+        )
+        state_sequence = torch.cat((states, actual[-1:]), 0)
+        mask_sequence = torch.cat(
+            (
+                masks,
+                torch.as_tensor(
+                    episode["next_state_mask"][maximum - 1 : maximum],
+                    device=device,
+                ),
+            ),
+            0,
+        )
+        video_sequence = torch.cat((current_tokens, next_tokens[-1:]), 0)
+        valid = torch.ones(1, maximum + 1, dtype=torch.bool, device=device)
         prior = method.state_prior(
-            states.unsqueeze(0),
-            masks.unsqueeze(0),
-            proprio.unsqueeze(0) if method.state_prior.proprio_dim else None,
-            visual,
+            state_sequence.unsqueeze(0),
+            mask_sequence.unsqueeze(0),
+            video_sequence.unsqueeze(0),
             valid,
         )
         passive = prior.passive_next.squeeze(0)
-        adapted_state, _ = method.state_adapter(
-            states, passive, actions, prior.hidden.squeeze(0)
+        adapted_state, _, condition = method.state_adapter(
+            states,
+            passive,
+            actions,
+            prior.hidden.squeeze(0),
+            prior.video_summary[:, :-1].squeeze(0),
         )
-        actual = torch.as_tensor(
-            episode["next_control_state"][:maximum], device=device
+        adapted_logits, _ = method.state_adapter.adapt_video_sequence(
+            prior.video_logits.squeeze(0),
+            prior.video_predictor_hidden.squeeze(0),
+            condition,
         )
         next_mask = torch.as_tensor(
             episode["next_state_mask"][:maximum], device=device
@@ -216,6 +225,12 @@ def _save_adapter_diagnostics(
         adapted_error = (adapted_state - actual)[next_mask]
         metrics["state_prior_rmse"] = float(passive_error.square().mean().sqrt())
         metrics["state_adapter_rmse"] = float(adapted_error.square().mean().sqrt())
+        metrics["video_prior_token_accuracy"] = float(
+            (prior.video_logits.squeeze(0).argmax(-1) == next_tokens.flatten(-2)).float().mean()
+        )
+        metrics["video_adapter_token_accuracy"] = float(
+            (adapted_logits.argmax(-1) == next_tokens.flatten(-2)).float().mean()
+        )
         save_state_prediction_comparison(
             actual.float().cpu().numpy(),
             passive.float().cpu().numpy(),
@@ -284,6 +299,7 @@ def _save_adapter_diagnostics(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data")
+    parser.add_argument("--tokens")
     parser.add_argument("--state-prior")
     parser.add_argument("--action-prior")
     parser.add_argument(
@@ -297,20 +313,37 @@ def main() -> None:
     seed_everything(seed)
     env_name = config["env"]["name"]
     data = Path(args.data or config.get("data", data_path(config, env_name, "paired")))
-    dataset = LazyEpisodeDataset(
+    raw_dataset = LazyEpisodeDataset(
         data,
         split="train",
         seed=int(config.get("seed", 0)),
         max_transitions=config.get("max_transitions"),
     )
-    print(f"Using {len(dataset)} train episodes ({dataset.transition_count} transitions)")
-    sample = dataset[0]
-    config["env"]["proprio_size"] = int(sample["proprio"].shape[-1])
+    print(f"Using {len(raw_dataset)} train episodes ({raw_dataset.transition_count} transitions)")
+    sample = raw_dataset[0]
     config["env"]["goal_size"] = int(sample["goals"].shape[-1])
     state_enabled = _bool(config.get("state_adapter", config["model"]["state_adapter"].get("enabled", True)))
     action_enabled = _bool(config.get("action_adapter", config["model"]["action_adapter"].get("enabled", True)))
     config["model"]["state_adapter"]["enabled"] = state_enabled
     config["model"]["action_adapter"]["enabled"] = action_enabled
+    token_root = Path(
+        args.tokens or data_path(config, env_name, "tokens/paired")
+    )
+    token_dataset = (
+        LazyEpisodeDataset(
+            token_root,
+            split="train",
+            seed=int(config.get("seed", 0)),
+            max_transitions=config.get("max_transitions"),
+        )
+        if state_enabled
+        else None
+    )
+    dataset = (
+        _StateTokenDataset(raw_dataset, token_dataset)
+        if token_dataset is not None
+        else raw_dataset
+    )
     method = build_method(config)
     state_path = Path(
         args.state_prior
@@ -384,6 +417,7 @@ def main() -> None:
     state_dimension_weights = _state_dimension_weights(config, device)
     history: dict[str, list[float]] = {
         "state_adapter": [],
+        "video_adapter": [],
         "action_adapter": [],
         "action_soft_nll": [],
         "action_conservative_kl": [],
@@ -395,7 +429,7 @@ def main() -> None:
     kl_final = float(action_cfg.get("kl_lambda_final", kl_start))
     kl_anneal_epochs = max(1, int(action_cfg.get("kl_anneal_epochs", epochs)))
     for epoch in range(epochs):
-        total_state = total_action = total_soft_nll = total_action_kl = 0.0
+        total_state = total_video = total_action = total_soft_nll = total_action_kl = 0.0
         steps = state_updates = action_updates = 0
         kl_progress = (
             1.0
@@ -408,7 +442,11 @@ def main() -> None:
             epoch_rng.permutation(len(dataset)) if optimizer is not None else ()
         )
         for episode_index in episode_indices:
-            episode = dataset[int(episode_index)]
+            loaded_episode = dataset[int(episode_index)]
+            if state_enabled:
+                episode, token_episode = loaded_episode
+            else:
+                episode, token_episode = loaded_episode, None
             states = torch.as_tensor(episode["control_state"], device=device)
             masks = torch.as_tensor(episode["state_mask"], device=device)
             next_states = torch.as_tensor(episode["next_control_state"], device=device)
@@ -448,18 +486,27 @@ def main() -> None:
                     action_is_expert[int(successful_steps[0]) + 1 :] = False
             if not state_enabled and not action_is_expert.any():
                 continue
-            proprio = (
-                torch.as_tensor(episode["proprio"], device=device)
-                if state_enabled
+            video_tokens = (
+                torch.as_tensor(token_episode["video_tokens"], device=device)
+                if token_episode is not None
                 else None
             )
-            rgb = (
-                torch.as_tensor(episode["rgb"], device=device)
-                if state_enabled
+            next_video_tokens = (
+                torch.as_tensor(token_episode["next_video_tokens"], device=device)
+                if token_episode is not None
                 else None
             )
             length = states.size(0)
             valid = torch.ones(1, length, dtype=torch.bool, device=device)
+            state_start, state_stop = 0, length
+            if state_enabled:
+                state_window = min(
+                    length,
+                    int(config["model"]["state_adapter"].get("train_context_length", 8)),
+                )
+                if length > state_window:
+                    state_start = int(epoch_rng.integers(length - state_window + 1))
+                state_stop = state_start + state_window
             action_start, action_stop = 0, length
             action_history = actions[:-1]
             action_prefix = 0
@@ -521,18 +568,40 @@ def main() -> None:
                         )
                         action_history[augmented_start:][dropped] = 0
             with torch.no_grad():
-                visual = (
-                    method.visual_encoder(rgb.unsqueeze(0))
-                    if state_enabled and method.visual_encoder is not None
-                    else None
-                )
+                if state_enabled:
+                    state_sequence = torch.cat(
+                        (
+                            states[state_start:state_stop],
+                            next_states[state_stop - 1 : state_stop],
+                        ),
+                        0,
+                    )
+                    mask_sequence = torch.cat(
+                        (
+                            masks[state_start:state_stop],
+                            next_masks[state_stop - 1 : state_stop],
+                        ),
+                        0,
+                    )
+                    video_sequence = torch.cat(
+                        (
+                            video_tokens[state_start:state_stop],
+                            next_video_tokens[state_stop - 1 : state_stop],
+                        ),
+                        0,
+                    )
+                    state_valid = torch.ones(
+                        1,
+                        state_window + 1,
+                        dtype=torch.bool,
+                        device=device,
+                    )
                 state_output = (
                     method.state_prior(
-                        states.unsqueeze(0),
-                        masks.unsqueeze(0),
-                        proprio.unsqueeze(0) if method.state_prior.proprio_dim else None,
-                        visual,
-                        valid,
+                        state_sequence.unsqueeze(0),
+                        mask_sequence.unsqueeze(0),
+                        video_sequence.unsqueeze(0),
+                        state_valid,
                     )
                     if state_enabled
                     else None
@@ -545,17 +614,18 @@ def main() -> None:
             loss = states.new_zeros(())
             has_trainable_loss = False
             if state_enabled:
-                assert state_output is not None and proprio is not None
-                predicted, _ = method.state_adapter(
-                    states,
+                assert state_output is not None
+                predicted, _, state_condition = method.state_adapter(
+                    states[state_start:state_stop],
                     state_output.passive_next.squeeze(0),
-                    actions,
+                    actions[state_start:state_stop],
                     state_output.hidden.squeeze(0),
+                    state_output.video_summary[:, :-1].squeeze(0),
                 )
                 state_loss = masked_state_loss(
                     predicted,
-                    next_states,
-                    next_masks,
+                    next_states[state_start:state_stop],
+                    next_masks[state_start:state_stop],
                     state_dimension_weights,
                 )
                 train_horizon = int(config["model"]["state_adapter"].get("train_horizon", 1))
@@ -571,8 +641,8 @@ def main() -> None:
                         next_states,
                         next_masks,
                         actions,
-                        proprio,
-                        visual,
+                        video_tokens,
+                        next_video_tokens,
                         train_horizon,
                         float(config["model"]["state_adapter"].get("rollout_discount", 0.99)),
                         start=rollout_start,
@@ -583,8 +653,22 @@ def main() -> None:
                         ),
                         dimension_weights=state_dimension_weights,
                     )
-                loss = loss + state_loss
-                total_state += float(state_loss.item())
+                adapted_video_logits, _ = method.state_adapter.adapt_video_sequence(
+                    state_output.video_logits.squeeze(0),
+                    state_output.video_predictor_hidden.squeeze(0),
+                    state_condition,
+                )
+                token_targets = next_video_tokens[state_start:state_stop].flatten(-2)
+                video_loss = F.cross_entropy(
+                    adapted_video_logits.reshape(-1, adapted_video_logits.size(-1)),
+                    token_targets.reshape(-1),
+                )
+                combined_state_loss = state_loss + float(
+                    config["model"]["state_adapter"].get("video_loss_weight", 1.0)
+                ) * video_loss
+                loss = loss + combined_state_loss
+                total_state += float(combined_state_loss.item())
+                total_video += float(video_loss.item())
                 state_updates += 1
                 has_trainable_loss = True
             if action_enabled:
@@ -699,6 +783,7 @@ def main() -> None:
         soft_average = total_soft_nll / max(1, action_updates)
         kl_average = total_action_kl / max(1, action_updates)
         history["state_adapter"].append(state_average)
+        history["video_adapter"].append(total_video / max(1, state_updates))
         history["action_adapter"].append(action_average)
         history["action_soft_nll"].append(soft_average)
         history["action_conservative_kl"].append(kl_average)
@@ -708,6 +793,7 @@ def main() -> None:
         )
         print(
             f"epoch={epoch + 1} state_adapter_loss={state_average:.6f} "
+            f"video_adapter_loss={total_video / max(1, state_updates):.6f} "
             f"action_adapter_loss={action_average:.6f} soft_nll={soft_average:.6f} "
             f"conservative_kl={kl_average:.6f} kl_weight={kl_weight:.4f}"
         )
@@ -722,6 +808,7 @@ def main() -> None:
     torch.save(
         {
             "kind": "adapters",
+            "architecture_version": method.state_prior.architecture_version,
             "config": config,
             "state_adapter": method.state_adapter.state_dict() if state_enabled else None,
             "action_adapter": method.action_adapter.state_dict() if action_enabled else None,
@@ -734,26 +821,41 @@ def main() -> None:
     )
     diagnostics_directory = output.parent / f"{output.stem}_diagnostics"
     save_training_history(history, diagnostics_directory / "training_loss")
-    diagnostic_data = LazyEpisodeDataset(
+    raw_diagnostic_data = LazyEpisodeDataset(
         data,
         split="val",
         seed=seed,
         max_transitions=config.get("max_transitions"),
     )
-    if not len(diagnostic_data):
-        diagnostic_data = dataset
+    token_diagnostic_data = (
+        LazyEpisodeDataset(
+            token_root,
+            split="val",
+            seed=seed,
+            max_transitions=config.get("max_transitions"),
+        )
+        if state_enabled and len(raw_diagnostic_data)
+        else None
+    )
+    diagnostic_data = (
+        _StateTokenDataset(raw_diagnostic_data, token_diagnostic_data)
+        if token_diagnostic_data is not None
+        else dataset
+    )
     if len(diagnostic_data) and state_enabled and action_enabled:
-        diagnostic_episode = diagnostic_data[0]
+        diagnostic_episode, diagnostic_tokens = diagnostic_data[0]
         paired_config = dict(config["env"].get("paired_data", {}))
         if bool(paired_config.get("successful_expert_only", False)):
             threshold = float(paired_config.get("success_reward_threshold", 0.0))
-            for candidate in diagnostic_data:
+            for candidate, candidate_tokens in diagnostic_data:
                 if np.any(np.asarray(candidate["rewards"]) >= threshold):
                     diagnostic_episode = candidate
+                    diagnostic_tokens = candidate_tokens
                     break
         metrics = _save_adapter_diagnostics(
             method,
             diagnostic_episode,
+            diagnostic_tokens,
             device,
             diagnostics_directory,
             state_enabled,

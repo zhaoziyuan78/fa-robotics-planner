@@ -1,5 +1,14 @@
 model:
   name: FunctionAlignmentWM
+  tokenizer:
+    type: vqvae
+    hidden_dim: 128
+    codebook_size: 512
+    code_dim: 128
+    downsample_factor: 8
+    commitment_weight: 0.25
+    learning_rate: 0.0002
+    gradient_clip_norm: 1.0
   action_prior:
     type: transformer
     d_model: 128
@@ -8,15 +17,28 @@ model:
     dropout: 0.1
     max_length: 128
   state_prior:
-    type: causal_video_transformer
-    d_model: 256
-    n_layers: 4
-    n_heads: 8
+    type: coupled_video_observation_autoregressive
+    architecture_version: 2
     dropout: 0.1
-    max_length: 128
-    visual_dim: 128
-    normalize_visual: true
-    residual_prediction: true
+    context_frames: 8
+    max_frames: 128
+    video:
+      d_model: 256
+      n_layers: 4
+      n_heads: 8
+      d_ff: 1024
+    observation:
+      type: auto
+      d_model: 128
+      n_layers: 2
+      n_heads: 4
+    training:
+      observation_warmup_epochs: 5
+      video_warmup_epochs: 5
+      joint_epochs: 10
+      state_loss_weight: 1.0
+      video_loss_weight: 1.0
+    learning_rate: 0.0002
     gradient_clip_norm: 1.0
   state_adapter:
     enabled: true
@@ -30,6 +52,7 @@ model:
     # available as an ablation, but amplified early model error on Fetch/H1.
     train_horizon: 1
     train_context_length: 8
+    video_loss_weight: 1.0
     gradient_clip_norm: 1.0
   action_adapter:
     enabled: true

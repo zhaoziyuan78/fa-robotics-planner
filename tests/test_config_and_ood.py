@@ -61,13 +61,30 @@ def test_humanoid_env_override_is_loaded_after_generic_planner():
     assert config["eval"]["candidate_batch_size"] == "auto"
 
 
+def test_fetch_push_uses_one_full_candidate_batch_on_paper_gpu():
+    config = compose_config(
+        [
+            "model=prior_adapter",
+            "planner=shooting",
+            "env=fetch_push",
+            "eval=id",
+        ],
+        config_root=ROOT / "configs",
+    )
+    assert config["planner"]["horizon"] == 2
+    assert config["planner"]["num_candidates"] == 256
+    assert config["eval"]["candidate_batch_size"] == 256
+
+
 def test_humanoid_shared_state_prior_uses_plateau_schedule_and_early_stop():
     config = compose_config(
         ["model=prior_adapter", "env=humanoid_shared"],
         config_root=ROOT / "configs",
     )
     state_prior = config["model"]["state_prior"]
-    assert state_prior["learning_rate"] == 1e-3
+    assert state_prior["learning_rate"] == 2e-3
+    assert state_prior["observation"]["type"] == "transformer"
+    assert state_prior["observation"]["d_model"] == 256
     assert state_prior["scheduler"]["name"] == "reduce_on_plateau"
     assert state_prior["early_stopping"]["enabled"] is True
 

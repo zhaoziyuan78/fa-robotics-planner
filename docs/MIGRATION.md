@@ -26,7 +26,8 @@ copy of its 990-line evaluation script.
 3. Legacy wind slope metadata was ignored by `_wind_at`. `legacy_static_wind`
    defaults to true for compatibility; slope/reversal requires explicit config.
 4. `success` is now a proper `terminated` condition and time limit is
-   `truncated`. This distinction propagates to TD-MPC2/external requests.
+   `truncated`. This distinction propagates to offline trajectory targets and
+   every evaluator.
 5. Action-only data physically omits all non-action fields instead of relying on
    the training loop to ignore them.
 6. The resource-aware paper profile replaces the original generic 10k--2M
@@ -58,13 +59,19 @@ copy of its 990-line evaluation script.
 11. Random shooting retains the world-model rollout generated during
     state-conditioned proposal sampling instead of evaluating it twice. It also
     includes a deterministic proposal-mean anchor. Evaluation uses a causal
-    Action Prior KV cache, vectorized H1 scoring, TF32/BF16 where appropriate,
-    and a step-level progress bar.
+    Action Prior KV cache, a shared real-state context, preallocated incremental
+    video K/V suffixes, terminal-video elimination, vectorized H1 scoring,
+    TF32/BF16 where appropriate, and a step-level progress bar.
 12. The unstable generic H1 PPO nominal is replaced by HumanoidBench's released
     19-actuator reaching controller plus the official fixed hand pose. Stand
     uses a task-independent fixed target offset. Reach/Push use residual scale
     1.0 because 0.25 clipped away the offline expert action; this is configured
     per environment.
+13. Evaluation records now retain the native reward at every environment step.
+    `scripts.plot_reward_curve` uses those sequences to aggregate main,
+    ablation, and baseline curves across training seeds without giving runs
+    with more episodes extra weight. Legacy total-return-only runs require
+    reevaluation because their intermediate rewards are not recoverable.
 
 Existing reference checkpoints are architecture-specific and continue to run
 from `~/fa-planner`. New checkpoints include the resolved config and cannot be

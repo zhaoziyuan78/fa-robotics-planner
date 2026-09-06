@@ -40,8 +40,17 @@ env:
     damping_multiplier: [0.9, 1.1]
     actuator_strength_multiplier: [0.9, 1.1]
 
+model:
+  state_prior:
+    observation:
+      type: transformer
+      d_model: 256
+      n_layers: 4
+      n_heads: 8
+
 planner:
   num_candidates: 64
+  horizon: 2
 
 eval:
   proposal_std_scale: 0.03

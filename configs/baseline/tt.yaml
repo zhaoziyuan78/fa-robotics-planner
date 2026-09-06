@@ -1,0 +1,48 @@
+baseline:
+  name: tt
+  algorithm: TT
+  implementation: vq_token_trajectory_transformer_beam_search
+  observation: vq_rgb_tokens+desired_goal+return_to_go+trajectory_history
+  offline_only: true
+  data: null
+  # Defaults to <paired-data-parent>/tokens/paired_seed${seed}. The token
+  # manifest records the exact VQ-VAE checkpoint, so these normally stay null.
+  tokens: null
+  vqvae: null
+  context_length: 20
+  d_model: 256
+  state_embed_dim: 64
+  n_layers: 6
+  n_heads: 8
+  d_ff: 1024
+  dropout: 0.1
+  batch_size: 16
+  epochs: 50
+  gradient_updates: null
+  learning_rate: 0.0003
+  min_learning_rate: 0.00001
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  mixed_precision: true
+  amp_dtype: bfloat16
+  return_discount: 1.0
+  target_return_quantile: 0.95
+  action_bins: 21
+  reward_bins: 101
+  return_bins: 101
+  # Collector-policy labels are intentionally ignored.  They identify how a
+  # shard was generated and are not part of the trajectory observation.
+  action_loss_weight: 2.0
+  state_loss_weight: 1.0
+  reward_loss_weight: 1.0
+  done_loss_weight: 1.0
+  planning_horizon: 5
+  beam_width: 16
+  action_candidates: 16
+  # Joint actions are the exact highest-probability Cartesian products of the
+  # top bins per dimension; this remains tractable for 61-D Humanoid actions.
+  action_top_k: 4
+  planning_temperature: 1.0
+  action_likelihood_weight: 0.05
+  transition_likelihood_weight: 0.01
+  planning_reward_weight: 1.0

@@ -46,8 +46,17 @@ env:
 
 eval:
   proposal_std_scale: 0.1
+  # RTX 5000 Ada can hold all 256 H=2 candidates in one preallocated video-KV
+  # batch. This avoids four repetitions of the 144-token autoregressive loop.
+  candidate_batch_size: 256
 
 model:
+  state_prior:
+    observation:
+      type: transformer
+      d_model: 128
+      n_layers: 3
+      n_heads: 4
   action_adapter:
     # Fetch actions spend long phases at their bounds; Gaussian target
     # smoothing biased those phase transitions. This is the audited 84%-100%
@@ -59,3 +68,7 @@ model:
     residual_clip: null
     history_noise_std: 0.15
     history_dropout: 0.30
+
+planner:
+  horizon: 2
+  num_candidates: 256

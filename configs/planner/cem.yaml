@@ -1,12 +1,9 @@
 planner:
   name: cem
-  horizon: 2
+  horizon: 8
   num_candidates: 256
   num_elites: 32
   iterations: 4
   momentum: 0.1
   min_std: 0.05
   execute_steps: 1
-  horizon_sweep: [2, 5, 10, 20]
-  candidate_sweep: [16, 64, 256, 1024]
-

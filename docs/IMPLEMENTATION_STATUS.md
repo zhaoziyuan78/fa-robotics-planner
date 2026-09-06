@@ -1,6 +1,6 @@
 # Implementation status
 
-Updated: 2026-08-22
+Updated: 2026-08-28
 
 ## Phase 0 — audit and regression
 
@@ -51,15 +51,13 @@ Updated: 2026-08-22
 
 ## Phase 5 — baselines
 
-- [x] GC-SAC/GC-SAC+HER implementation.
-- [x] HER warm-up and replay-capacity guards verified across the 500-step
-  Humanoid boundary; real and relabelled samples share one -1/0 sparse reward.
-- [x] 128-step train/save/load/5-episode Windy smoke run.
-- [x] DreamerV3 uses the configured official model size (small by default),
-  selects the available JAX platform, and respects the requested eval count.
-- [x] HumanoidBench-bundled TD-MPC2: official 1M model, replay/update/MPPI,
-  128 Windy steps, 28 gradient updates, CUDA checkpoint reload, and five
-  evaluation episodes.
+- [x] Active set reduced to GCRL, Trajectory Transformer, and DINO-WM.
+- [x] All three consume the same exact-prefix paired dataset and record zero
+  training environment interactions.
+- [x] GCRL is offline GC-IQL with twin Q networks, expectile value regression,
+  advantage-weighted actor regression, and future-goal relabeling.
+- [x] TT is a causal return/goal-conditioned trajectory model with action,
+  next-state, reward, and done heads.
 - [x] Official DINO-WM commit `0a9492f`: frozen DINOv2 ViT-S/14,
   action-conditioned ViT predictor, latent objective, and official CEM migrated
   onto the unified modern wrapper. Full 100-step save/load/5-episode smokes pass
@@ -67,14 +65,10 @@ Updated: 2026-08-22
 - [x] DINO-WM covers the complete offline dataset for five epochs instead of
   four total minibatches; Fetch goal RGB places the object at the desired goal
   and restores simulator state exactly after rendering.
-- [x] Independent JSON subprocess protocol, stdout/stderr/failure recording,
-  resolved configs, and a separate legacy-Conda launcher.
+- [x] DINO-WM's independent JSON subprocess records stdout/stderr/failures and
+  reads paired RGB/state/action transitions instead of collecting online data.
 - [ ] DINO-WM Humanoid evaluation remains unsupported because a reproducible H1
   goal-image protocol has not been defined; the worker fails explicitly.
-- [x] Current GCRL was run through the 500-step Humanoid HER boundary and for
-  the full 10k Windy development budget. The latter performs 9,898 updates but
-  still has 0/20 sparse successes, now reported honestly with final distance
-  rather than hidden behind a zero-only return.
 - [ ] Full five-seed paper-budget training has not been run for every baseline.
 
 No external baseline is substituted with a toy algorithm. The default baseline
@@ -87,25 +81,32 @@ configs now point to the verified official workers.
 - [x] ID/OOD validation, bootstrap summaries, CSV/JSON/LaTeX, fairness helper,
   missing-run report, videos, and standard plot names.
 - [x] Evaluator has tqdm progress, causal Action Prior KV cache, BF16/TF32,
-  vectorized H1 scoring, and reused proposal rollouts.
+  vectorized H1 scoring, reused proposal rollouts, shared real-history context,
+  preallocated video K/V suffixes, terminal-video elimination, fused incremental
+  QKV projection, and one-time per-frame condition projections. FetchPush uses
+  one 256-candidate BF16 batch on the 32 GiB RTX 5000 Ada.
 - [x] Prior/adapter training writes JSON/NPZ/PNG loss histories. Full adapter
   training writes state-prediction GIFs and action-comparison plots; main and
   baseline evals write GIFs that can be combined side by side.
+- [x] Main and baseline evaluations persist native per-step rewards. The reward
+  curve tool discovers methods by environment, prefers the canonical
+  `metrics.jsonl` while retaining a legacy-filename fallback, averages episodes
+  within each seed and seeds with equal weight, and exports PNG plus
+  paper-auditable CSV.
 - [x] Audited Windy paired expert plus soft-target Action Adapter reaches 18/20
   seed-0 ID success using a 10k-transition prefix.
 - [ ] Paper-scale 5-seed/100-episode sweeps and videos have not been executed.
 
 ## Verified commands
 
-- The latest full suite passes 59/59 tests.
+- The latest full suite passes 77/77 tests.
 - Windy, FetchSlide, FetchPush, and all four H1 smoke commands pass.
 - Three Windy dataset types pass checksum/schema validation.
 - Tiny Windy Action Prior, State Prior, both adapters, shooting evaluation, and
   aggregation pass end to end.
-- GC-SAC+HER debug training, save, reload, and evaluation pass.
-- DreamerV3 and TD-MPC2 train/save/reload/five-episode Windy smokes pass.
-- DINO-WM train/save/reload/CEM/five-episode smokes pass on Windy and
-  FetchSlide-v4.
+- RTX 5000 offline checks pass: GCRL Q loss 0.698 to 0.342 with a successful
+  checkpoint rollout; TT total loss 0.308 to 0.055 with a successful rollout;
+  DINO-WM loss 6.07 to 4.28 over the first/last 20 updates.
 - Aggregate accepts scalar/bootstrap summaries, skips failed runs into the
   missing-run report, and regenerated six complete-run rows and all plots.
 - CUDA forward/backward passes on RTX 5000 Ada with Torch 2.3.1+cu121;

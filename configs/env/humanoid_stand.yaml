@@ -42,10 +42,19 @@ env:
     damping_multiplier: [0.9, 1.1]
     actuator_strength_multiplier: [0.9, 1.1]
 
+model:
+  state_prior:
+    observation: &humanoid_observation_prior
+      type: transformer
+      d_model: 256
+      n_layers: 4
+      n_heads: 8
+
 planner:
   # Stand has no task goal to search over; perturbing the stable nominal
   # proposal only hurts balance.  K=1 retains the model rollout and anchor.
   num_candidates: 1
+  horizon: 2
 
 eval:
   proposal_std_scale: 0.01

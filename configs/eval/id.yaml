@@ -9,8 +9,8 @@ eval:
   progress_update_interval: 10
   use_action_kv_cache: true
   state_context_length: 8
-  # auto enables BF16 for large (state_size >= 128) models and keeps small
-  # Windy/Fetch models in faster FP32.
+  # auto enables BF16 for large (state_size >= 128) models and the video-heavy
+  # FetchPush H=2 path; Windy and FetchSlide remain in faster FP32.
   mixed_precision: auto
   mixed_precision_dtype: bfloat16
   allow_tf32: true

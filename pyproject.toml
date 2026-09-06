@@ -21,24 +21,12 @@ dependencies = [
 [project.optional-dependencies]
 fetch = ["gymnasium==0.29.1", "mujoco==3.1.6"]
 humanoid = ["gymnasium==0.29.1", "mujoco==3.1.6"]
+# Stable-Baselines3 is retained for the shared Humanoid nominal-controller
+# infrastructure; the GCRL baseline itself is the PyTorch offline IQL above.
 gcrl = ["gymnasium==0.29.1", "stable-baselines3==2.3.2"]
 external-baselines = [
-  "chex==0.1.90",
-  "cloudpickle>=3.0",
-  "colored==2.2.4",
   "einops==0.4.1",
-  "GPUtil==1.4.0",
-  "jax==0.6.2",
-  "jaxlib==0.6.2",
-  "msgpack==1.0.8",
-  "optax==0.2.2",
-  "psutil>=5.9",
-  "pyzmq==26.0.3",
-  "ruamel.yaml==0.18.6",
-  "tensorflow-probability==0.24.0",
-  "tensordict==0.4.0",
-  "termcolor==2.4.0",
-  "torchrl==0.4.0",
+  "torchvision>=0.16",
 ]
 data = ["h5py>=3.9", "zarr>=2.16"]
 test = ["pytest>=8.0"]

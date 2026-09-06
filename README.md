@@ -1,301 +1,377 @@
 # FunctionAlignmentWM robotics planner
 
-This repository turns the original WindyNav experiment in `~/fa-planner` into a
-configuration-driven robotics experiment framework. The main method is named
-`FunctionAlignmentWM`; its Action Prior is strictly action-only, its State Prior
-is action-free, and both adapters are residual modules that can be independently
-disabled for the required 2x2 ablation.
+This repository implements FunctionAlignmentWM on WindyNav, Gymnasium-Robotics
+FetchSlide/FetchPush, and HumanoidBench H1 tasks. The method separates action
+regularity, passive world dynamics, and task-specific intervention:
 
-The original repository is not modified. Its saved Windy evaluations include
-90–95% success configurations; interfaces, losses, planner behavior, checkpoint
-shapes, and migration decisions are recorded in
-[`docs/CURRENT_IMPLEMENTATION_AUDIT.md`](docs/CURRENT_IMPLEMENTATION_AUDIT.md).
+```text
+action history ── Action Prior ── Action Adapter(state, goal) ── candidate action
 
-## What is implemented
+video-token history ── Video Prior ──┐
+                                     ├─ State Adapter(action) ─ next state + video tokens
+observation history ─ Observation Prior ─┘
+```
 
-- Unified `ObservationBundle`, `StepResult`, and `UnifiedControlEnv` contracts.
-- Legacy-compatible Windy dynamics plus explicitly configured drifting/OOD wind.
-- Gymnasium-Robotics FetchSlide-v4 and FetchPush-v4 wrappers, including mass,
-  friction, size, initial-velocity, and actuator OOD controls.
-- HumanoidBench `h1hand` Stand, Balance Simple, Reach, and Push wrappers with a
-  shared 151-dimensional proprioception schema, normalized 61-dimensional
-  residual action, one frozen nominal controller, and physics OOD controls.
-- Isolated sharded-NPZ datasets with checksummed manifests. Action-only shards
-  physically reject state, goal, reward, and task fields.
-- Strict causal Transformer Action/State Priors, latent RGB encoder, residual
-  State/Action Adapters, frozen-prior checks, and parameter reports.
-- Prior-sampling/random shooting and continuous CEM with terminal-aware batched
-  rollout and receding-horizon execution.
-- Deterministic Windy, Fetch, and H1 task scorers.
-- ID/OOD evaluation, bootstrap confidence intervals, candidate ranking/contact
-  metrics, run metadata, CSV/JSON/LaTeX aggregation, missing-run reporting, and
-  standardized plots/videos.
-- A real GC-SAC/GC-SAC+HER implementation through Stable-Baselines3.
-- Official HumanoidBench DreamerV3 and TD-MPC2 workers, plus the official
-  DINO-WM model/CEM migrated onto the modern unified environments. Every worker
-  trains, saves, reloads, evaluates, and keeps independent logs.
+The current architecture is checkpoint version 2. Checkpoints produced by the
+older CNN visual encoder and single multimodal State Prior are intentionally
+rejected instead of being partially loaded.
 
-The external algorithm sources and paper checkpoints are not vendored. Their
-audited commits, smoke budgets, and remaining paper-scale work are explicit in
-[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
+## Main architecture
 
-## Planner environment setup
+### Frame tokenizer
 
-The tested environment is the existing Conda environment `planner`. HumanoidBench
-pins Gymnasium 0.29.1, MuJoCo 3.1.6, Torch 2.3.1, and torchvision 0.18.1. Fetch v4
-comes from Gymnasium-Robotics 1.4.2. Its declared Gymnasium lower bound is newer,
-but the runtime difference is confined to `MujocoRenderer(width, height)`; the
-Fetch wrapper contains a narrow compatibility shim and both v4 tasks are tested.
+RGB frames are tokenized by a separately trained VQ-VAE:
+
+```text
+RGB → 3 stride-2 convolutions → codebook lookup → discrete token grid
+```
+
+The default codebook contains 512 vectors of dimension 128. A `64×64` Windy
+frame becomes `8×8=64` tokens; a `96×96` Fetch/H1 frame becomes `12×12=144`
+tokens. VQ-VAE training uses reconstruction, codebook, and commitment losses.
+The trained tokenizer is frozen before State Prior training.
+
+### Coupled State Prior
+
+The action-free State Prior has two independent causal branches:
+
+- a raster-order video Transformer operating only on discrete video tokens;
+- an observation GRU/Transformer operating only on `control_state` and its
+  validity mask.
+
+There is no separate proprioception branch or proprio encoder in the State
+Prior: it consumes only video tokens plus the unified environment observation
+(`control_state`). Windy uses a small GRU for its four-dimensional observation;
+Fetch and H1 use causal Transformers.
+Two zero-initialized directional MLPs connect the branches:
+
+- the latest observation hidden conditions the next-frame token distribution;
+- the latest video-frame summary conditions the next observation prediction.
+
+Training has three explicit phases: observation warmup, video warmup, then joint
+cross-modal training. Observation values are normalized with masked train-split
+statistics stored in the checkpoint.
+
+### Joint State Adapter
+
+The State Adapter receives the current observation, passive next observation,
+candidate action, observation hidden, and video summary. It produces:
+
+- an additive next-observation correction;
+- a shared spatially conditioned residual over VQ codebook logits for every
+  next-frame token.
+
+Both output heads are zero initialized. A newly constructed adapter is therefore
+exactly the frozen passive prior. During imagined rollout, the corrected state
+and corrected discrete video frame are both appended to the candidate history.
+
+The Action Prior and Action Adapter remain strictly action-only and
+state/goal-conditioned respectively.
+
+## Environments and data isolation
+
+The data values accepted by `scripts.generate_data` are:
+
+- `state_prior`: RGB, observation and masks under passive/zero task action;
+- `action_prior`: actions and action bounds only; state, goal and reward fields
+  are physically rejected by schema validation;
+- `paired`: action-conditioned transitions used by both adapters.
+
+Windy generation matches the original `~/fa-planner` behavior:
+
+- action-only: zero wind and one constant maximum action toward the goal;
+- state-only: random initial position, regional static wind, zero action;
+- paired: an episode-level 50/50 mixture of wind-compensating PD expert and
+  goal-directed Gaussian actions.
+
+Fetch and Humanoid data generation is unchanged. Raw shards stay immutable;
+VQ tokens are written to separate checksummed token-cache datasets.
+
+## Installation
+
+The tested environment is the existing `planner` Conda environment:
 
 ```bash
 conda activate planner
-
 python -m pip install -e '.[data,test,gcrl,external-baselines]'
-python -m pip install --no-deps \
-  gymnasium==0.29.1 mujoco==3.1.6 \
-  stable-baselines3==2.3.2 pettingzoo==1.24.3 \
-  torchvision==0.18.1 gymnasium-robotics==1.4.2
 ```
 
-HumanoidBench's packaging omits `dmc_deps`, `envs`, and XML assets from a normal
-wheel. Install its full source at the audited commit:
+Large artifacts default to:
 
-```bash
-git clone https://github.com/carlosferrazza/humanoid-bench.git \
-  /home/ziyuan.zhao/.tmp/humanoid-bench-cb1189
-git -C /home/ziyuan.zhao/.tmp/humanoid-bench-cb1189 \
-  checkout cb1189039151c8aadaaa987b442da54383c87fab
-python -m pip install --no-deps -e \
-  /home/ziyuan.zhao/.tmp/humanoid-bench-cb1189
-python -m pip install -e \
-  /home/ziyuan.zhao/.tmp/humanoid-bench-cb1189/dreamerv3
-python -m pip install -e \
-  /home/ziyuan.zhao/.tmp/humanoid-bench-cb1189/tdmpc2
-
-git clone https://github.com/gaoyuezhou/dino_wm.git \
-  /home/ziyuan.zhao/.tmp/dino_wm-official
-git -C /home/ziyuan.zhao/.tmp/dino_wm-official \
-  checkout 0a9492fa12044b852ae9e001cc74604b79c8bb0c
-```
-
-The current machine has already been configured this way. Because
-Gymnasium-Robotics' metadata does not describe this tested compatibility setup,
-`pip check` reports its Gymnasium constraint even though both Fetch v4 smoke
-tests pass.
-
-## Storage paths
-
-`configs/default.yaml` keeps large artifacts off the home filesystem by default:
-
-- datasets: `/l/users/ziyuan.zhao/fa-robotics-planner/data`
+- data: `/l/users/ziyuan.zhao/fa-robotics-planner/data`
 - checkpoints: `/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints`
 
-Checkpoint types are separated into `priors/`, `adapters/`, `infrastructure/`,
-and `baselines/`. Override `data_root=...` or `checkpoint_root=...` on any command
-when a different location is needed. Explicit `data=...`, `output=...`, or
-checkpoint-file arguments still take precedence.
+Both roots are controlled by `configs/default.yaml` and can be overridden with
+`data_root=...` and `checkpoint_root=...`.
 
-## Environment smoke tests
+HumanoidBench and official external baseline sources are not vendored. The
+complete installation and paper commands are in [command.md](command.md).
 
-Windy and Fetch need no additional arguments:
+## End-to-end training
 
-```bash
-python -m scripts.smoke_env --env windy
-python -m scripts.smoke_env --env fetch_slide
-python -m scripts.smoke_env --env fetch_push
-```
+The required order is:
 
-The repository contains a 512-step debug nominal controller for interface smoke
-tests. It is not a paper-quality standing policy.
+1. generate raw state/action/paired data;
+2. train one VQ-VAE per prior data domain;
+3. tokenize state-prior and paired RGB frames with that frozen VQ-VAE;
+4. train the three-stage coupled State Prior and the Action Prior;
+5. train State/Action Adapters;
+6. evaluate with the fixed task planning budget.
 
-```bash
-python -m scripts.smoke_env --env humanoid_stand
-python -m scripts.smoke_env --env humanoid_balance
-python -m scripts.smoke_env --env humanoid_reach
-python -m scripts.smoke_env --env humanoid_push
-```
+Minimal Windy examples follow. Paper-scale paths and all tasks are covered in
+[command.md](command.md).
 
-Train the shared infrastructure controller with a research budget before paper
-experiments:
+### Generate data
 
 ```bash
-python -m scripts.train_nominal_controller \
-  --steps 1000000 \
-  --seed 0 \
-  --device cuda \
-  nominal_controller_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_stand_ppo_paper.zip
+python -m scripts.generate_data env=windy dataset=state_prior episodes=100
+python -m scripts.generate_data env=windy dataset=action_prior episodes=100
+python -m scripts.generate_data env=windy dataset=paired episodes=100
 ```
 
-The metadata beside the checkpoint records its independent training cost.
-
-## Data generation
-
-The three accepted dataset values are `state_prior`, `action_prior`, and
-`paired`. Each episode is a lazy shard and every write updates `manifest.json`.
+### Train and apply the tokenizer
 
 ```bash
-python -m scripts.generate_data \
-  env=fetch_slide dataset=state_prior seed=0 episodes=1000
+python -m scripts.train_vqvae \
+  --data /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/state_prior \
+  --output /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/tokenizers/windy_vqvae_seed0.pt \
+  env=windy seed=0 epochs=30 batch_size=64
 
-python -m scripts.generate_data \
-  env=fetch_push dataset=paired seed=0 episodes=1000
+python -m scripts.tokenize_frames \
+  --data /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/state_prior \
+  --output /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/tokens/state_prior_seed0 \
+  --vqvae /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/tokenizers/windy_vqvae_seed0.pt \
+  env=windy seed=0
 
-python -m scripts.generate_data \
-  env=windy dataset=paired seed=0 episodes=1000
-
-python -m scripts.generate_data \
-  env=humanoid_shared dataset=state_prior seed=0 episodes=1000 \
-  nominal_controller_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_stand_ppo_paper.zip
-
-python -m scripts.generate_data \
-  env=humanoid_shared dataset=action_prior seed=0 episodes=1000 \
-  nominal_controller_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_stand_ppo_paper.zip
+python -m scripts.tokenize_frames \
+  --data /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/paired \
+  --output /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/tokens/paired_seed0 \
+  --vqvae /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/tokenizers/windy_vqvae_seed0.pt \
+  env=windy seed=0
 ```
 
-Humanoid shared generation samples Stand/Balance/Reach/Push with probabilities
-`0.25` each. State-only rollouts execute zero residual action while the nominal
-controller remains active. Action-only shards contain no task identifier.
-
-Validate any generated dataset:
+### Train priors
 
 ```bash
-python -m scripts.check_dataset \
-  /l/users/ziyuan.zhao/fa-robotics-planner/data/fetch_slide/state_prior
+python -m scripts.train_prior --prior state \
+  --data /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/state_prior \
+  --tokens /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/tokens/state_prior_seed0 \
+  --vqvae /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/tokenizers/windy_vqvae_seed0.pt \
+  --output /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/windy_state_prior_seed0.pt \
+  env=windy seed=0 epochs=30 batch_size=4
+
+python -m scripts.train_prior --prior action \
+  --data /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/action_prior \
+  --output /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/windy_action_prior_seed0.pt \
+  env=windy seed=0 epochs=20 batch_size=64
 ```
 
-## Training priors and adapters
+The State Prior checkpoint bundles the frozen VQ-VAE, so downstream commands do
+not require a separate tokenizer checkpoint argument.
 
-```bash
-python -m scripts.train_prior \
-  prior=state env_group=humanoid_shared
-
-python -m scripts.train_prior \
-  prior=action env_group=humanoid_shared
-```
-
-Only task adapters are trainable for each H1 task:
+### Train adapters
 
 ```bash
 python -m scripts.train_adapters \
-  env=humanoid_push state_adapter=true action_adapter=true \
-  state_prior_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/humanoid_shared_state_prior.pt \
-  action_prior_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/humanoid_shared_action_prior.pt
+  --data /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/paired \
+  --tokens /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/tokens/paired_seed0 \
+  --state-prior /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/windy_state_prior_seed0.pt \
+  --action-prior /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/windy_action_prior_seed0.pt \
+  --output /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/adapters/windy_Full_seed0.pt \
+  env=windy seed=0 epochs=30 max_transitions=10000 paired_steps=10000
 ```
 
-Every adapter run prints trainable parameter names/count and frozen
-names/count. Disabled adapters are removed from the optimizer.
+Adapter diagnostics report passive/adapted observation RMSE and passive/adapted
+video-token accuracy.
 
-## Main-method evaluation
+### Evaluate State Adapter rollouts
+
+The migrated open-loop diagnostic evaluates the frozen State Prior and the
+trained State Adapter under identical held-out actions. After the selected real
+history, both branches recursively consume only their own predicted observation
+and video tokens:
+
+```bash
+python -m scripts.eval_state_adapter_rollout \
+  --data /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/paired \
+  --tokens /l/users/ziyuan.zhao/fa-robotics-planner/data/windy/tokens/paired_seed0 \
+  --state-prior /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/windy_state_prior_seed0.pt \
+  --adapters /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/adapters/windy_Full_seed0.pt \
+  --output runs/state_adapter_rollout/windy_seed0 \
+  --split val --episodes 10 --history-lengths 0 1 4 8 \
+  --max-rollout-steps 0 env=windy seed=0
+```
+
+Zero rollout limit evaluates the complete remaining episode. The main PNG
+directly overlays the real future, passive-prior rollout, and adapted rollout;
+the main GIF renders predicted states rather than decoded VQ tokens. Separate
+`*_video_tokens.gif`/PNG files retain the video-token diagnostic. Add
+`--expert-only` to evaluate only contiguous transitions explicitly labelled as
+expert actions.
+
+Windy predictions use the physical world renderer. Fetch/Humanoid observations
+do not uniquely reconstruct private MuJoCo qpos/qvel, so their model panels use
+an explicit task-space trajectory canvas instead of a misleading pseudo-render.
+
+## Evaluation
+
+Both paired training data and planning compute are fixed; this project does not
+run a data-budget or planner-budget sweep. Windy, Fetch, and Humanoid
+Balance/Reach/Push use 10k paired transitions, while HumanoidStand uses 2k.
+Planning uses the following task-specific constants:
+
+| task | horizon | candidates |
+|---|---:|---:|
+| Windy | 2 | 256 |
+| FetchSlide | 1 | 256 |
+| FetchPush | 2 | 256 |
+| HumanoidStand | 2 | 1 |
+| Humanoid Balance/Reach/Push | 2 | 64 |
 
 ```bash
 python -m scripts.evaluate \
-  method=prior_adapter env=fetch_slide eval=id planner=shooting
-
-python -m scripts.evaluate \
-  method=prior_adapter env=humanoid_push eval=ood condition=weak_actuator_humanoid \
-  nominal_controller_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/infrastructure/h1hand_stand_ppo_paper.zip \
-  state_prior_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/humanoid_shared_state_prior.pt \
-  action_prior_checkpoint=/l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/humanoid_shared_action_prior.pt
+  --state-prior /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/windy_state_prior_seed0.pt \
+  --action-prior /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/priors/windy_action_prior_seed0.pt \
+  --adapters /l/users/ziyuan.zhao/fa-robotics-planner/checkpoints/adapters/windy_Full_seed0.pt \
+  env=windy eval=id seed=0 eval.fixed_planner_budget=true
 ```
 
-Select CEM with `planner=cem`. It is initialized from the corrected Action Prior
-distribution; it does not replace either prior or adapter.
+Evaluation uses:
 
-Validate every environment's configured OOD ranges and seed separation:
+- Action Prior incremental cache;
+- one cached real-history State Prior context shared by all candidate batches;
+- incremental projected video Transformer K/V cache across rollout horizons;
+- preallocated candidate K/V suffixes without per-token history copies;
+- fused Q/K/V projection and no redundant single-token attention masks;
+- one-time observation/adapter conditioning projection per generated frame;
+- no unused video-frame generation at the terminal planning horizon;
+- a single 256-candidate BF16 batch for FetchPush on the 32 GiB RTX 5000 Ada;
+- memory-bounded candidate microbatches and BF16 on H1;
+- tqdm step/episode progress.
+
+Changing `eval.candidate_batch_size` changes only peak memory, not the total
+candidate count. FetchPush defaults to 256; reduce it to 128 or 64 only on a
+smaller GPU. `eval.gif` contains only raw environment frames. Reward,
+success, seed, timestep and OOD annotations are written to JSON/JSONL files and
+never cover the video.
+
+Per-step native rewards are stored in `metrics.jsonl` for every main-method and
+baseline evaluation. Rerunning the same experiment replaces its evaluation
+records instead of appending duplicate episodes; the plotter still reads the
+legacy baseline-only `baseline_eval_metrics.jsonl` filename as a fallback.
+Plot the ID reward curve for one environment with:
 
 ```bash
-python -m scripts.validate_ood env=fetch_slide eval=ood
-python -m scripts.validate_ood env=humanoid_push eval=ood
+python -m scripts.plot_reward_curve \
+  --env windy --runs runs/paper_v4 --baseline-runs runs \
+  --out results/reward_curve_windy_id.png
 ```
+
+The plot automatically discovers Function Alignment, the three adapter
+ablations, and all available baselines. Episodes are averaged within each
+training seed before seeds are averaged with equal weight; the shaded region is
+a 95% confidence interval across seeds. The default curve is cumulative native
+reward. Pass `--metric reward` for instantaneous reward, or use
+`--eval ood --condition high_wind` for one OOD condition. A CSV containing the
+plotted means and intervals is written beside the PNG. Runs produced before
+per-step rewards were introduced must be evaluated again; an episode return
+alone cannot reconstruct a step curve.
+`--baseline-runs` may be repeated when legacy baseline jobs live outside the
+main paper run root. Only baseline-family records are imported from these
+additional roots, and duplicate method/seed pairs keep the newest complete run.
+Baselines are included by default; pass `--exclude-baselines` to plot only the
+main method and adapter ablations (or `--include-baselines` explicitly). The PNG
+and its CSV always contain the same selected method families.
+
+To export one deterministic high-quality paired-data rollout for every Fetch
+and Humanoid task without loading an environment or checkpoint:
+
+```bash
+python -m scripts.visualize_dataset_rollouts --output results/viz
+```
+
+The script prefers `paper_v4`, then `paper_v2`, then the unversioned dataset for
+each task. Long Humanoid episodes are sampled uniformly over their full time
+extent, and `results/viz/selection.json` records the exact episode, source path,
+return, and frame indices used. Use `--dataset TASK=/path/to/paired` to override
+one source dataset.
 
 ## Baselines
 
-GC-SAC uses the same wrapper, bounds, reward, horizon, seeds, and interaction
-budget. HER is enabled only on relabelable tasks.
+The active comparison set is **GCRL, TT, and DINO-WM**. All three are trained
+strictly offline from the same generated `paired` dataset. Training constructs
+no environment and records `training_environment_steps: 0`; the environment is
+created only after the checkpoint has been written, for evaluation.
+
+- GCRL is offline goal-conditioned IQL with twin critics, an expectile value
+  network, advantage-weighted actor regression, and future-goal relabeling.
+- TT reads the precomputed VQ image-token trajectories. Its causal Transformer
+  predicts discretized actions and, conditioned on each candidate action, the
+  next VQ tokens, native reward, and termination flag. Evaluation encodes only
+  the live RGB frame and uses model-predictive beam search; it never reads the
+  environment's structured state or an expert future trajectory. For arbitrary
+  action dimension (including 61-D Humanoid), a heap performs k-best search over
+  the retained per-dimension bins without an exponential Cartesian-product
+  enumeration. TT ignores `action_is_expert`,
+  computes all statistics from training shards only, and on Windy crops its
+  private trajectory view at first success. Fetch retains its recorded horizon.
+- DINO-WM retains the audited official DINOv2 encoder/world-model code and CEM
+  planner, but reads consecutive windows from the shared paired shards. The
+  dynamics input is RGB plus `control_state`; desired goal is target-only and
+  cannot shortcut action dynamics. Its structured projection is frozen
+  full-rank, direct state prediction is supervised, and CEM candidates are
+  bounded to actions the environment can actually execute. Windy scores the
+  model's predicted velocity integral because its one-step position contains a
+  hidden-wind displacement; Fetch keeps direct achieved-goal scoring.
 
 ```bash
 python -m scripts.train_baseline \
-  baseline=gcrl env=fetch_slide profile=debug environment_steps=1000
-```
-
-The three official workers are configured by default. These dependency smokes
-use short budgets and are intended to verify training, checkpoint reload, and
-five-episode evaluation—not to produce meaningful success rates:
-
-```bash
-python -m scripts.train_baseline \
-  baseline=dreamerv3 env=windy profile=debug \
-  environment_steps=100 experiment_id=smoke_dreamerv3
+  baseline=gcrl env=fetch_slide offline_transitions=10000 \
+  data_root=/l/users/ziyuan.zhao/fa-robotics-planner/data/paper_v4
 
 python -m scripts.train_baseline \
-  baseline=tdmpc2 env=windy profile=debug \
-  environment_steps=128 experiment_id=smoke_tdmpc2
+  baseline=tt env=windy offline_transitions=10000 \
+  data_root=/l/users/ziyuan.zhao/fa-robotics-planner/data/paper_v4
 
 python -m scripts.train_baseline \
-  baseline=dino_wm env=windy profile=debug env.episode_horizon=10 \
-  environment_steps=100 experiment_id=smoke_dino_wm_windy
-
-python -m scripts.train_baseline \
-  baseline=dino_wm env=fetch_slide profile=debug env.episode_horizon=10 \
-  environment_steps=100 experiment_id=smoke_dino_wm_fetch_slide
+  baseline=dino_wm env=windy offline_transitions=10000 \
+  data_root=/l/users/ziyuan.zhao/fa-robotics-planner/data/paper_v4
 ```
 
-Each subprocess receives `--request <json> --output <run_dir>` and writes a
-checkpoint, resolved config, metrics, summary, stdout, and stderr. DreamerV3
-runs its JAX debug model on CPU because this environment has CPU-only jaxlib;
-TD-MPC2 and DINO-WM run on CUDA. DINO-WM uses integration strategy A: only its
-official DINOv2/action-conditioned ViT/CEM code is imported, while its Gym 0.23
-and `mujoco-py` environment stack is not. For an experiment that truly needs
-the legacy stack, `scripts.run_dino_wm_isolated` launches an explicitly named
-separate Conda environment.
+DINO-WM is run on Windy and Fetch only. H1 tasks do not have a vector-goal to
+goal-image protocol equivalent to the official DINO-WM objective.
 
-## Ablation, aggregation, and plots
+All baseline launchers use the existing `planner` Conda environment; no JAX or
+second baseline environment is required. `offline_transitions` is an exact
+static-data cap. The legacy `environment_steps` override is accepted only as a
+backward-compatible alias for this cap and never enables online collection.
+State-only and action-only prior datasets are intentionally not mixed by
+default because neither independently contains aligned transitions.
 
-Generate the exact four adapter combinations for five seeds:
-
-```bash
-python -m scripts.run_adapter_ablation \
-  --env windy --seeds 0,1,2,3,4
-```
-
-The command writes resolved YAML files and a manifest under
-`runs/ablation_configs`; those resolved configs are the queue inputs for the
-cluster launcher.
-
-Aggregate all completed runs:
-
-```bash
-python -m experiments.aggregate --runs runs/ --output results/
-python -m scripts.fairness_report \
-  --runs runs/ --output results/fairness_report.md
-```
-
-This creates CSV, JSON, LaTeX, a missing-run report, and these standard figures:
-
-- `success_vs_paired_data.png`
-- `success_vs_planning_candidates.png`
-- `id_vs_ood_success.png`
-- `adapter_ablation_heatmap.png`
-- `passive_rollout_error.png`
-- `intervention_error.png`
-- `candidate_ranking.png`
+Windy exposes only a sparse 0/1 success reward. GCRL may use dense public
+goal-distance reward during offline optimization, while evaluation and every
+reward curve always report native environment rewards. TT uses native
+return-to-go conditioning and its learned native-reward head to score beam
+rollouts after Windy's first-success terminalization (Fetch keeps its recorded
+horizon). The TT checkpoint bundles the frozen VQ encoder recorded by the token
+manifest, so evaluation cannot accidentally use a different tokenizer.
+DINO-WM does not train on reward; its CEM score uses only public goal
+coordinates decoded from the predicted structured token.
 
 ## Tests
 
 ```bash
 XDG_CACHE_HOME=/tmp/fa-xdg-cache \
 MPLCONFIGDIR=/tmp/fa-mpl-cache \
-pytest -q
+python -m pytest -q
 ```
 
-The suite includes real reset/step/render/OOD tests for Windy, FetchSlide,
-FetchPush, and all four HumanoidBench tasks; prior information-isolation tests;
-adapter freeze/bypass tests; variable-length masks; toy planner correctness;
-dataset leakage/integrity checks; and external baseline protocol checks.
+The test suite covers data isolation and manifests, VQ token shapes, both causal
+prior branches, directional fusion, state/video adapter corrections, prior
+freezing, cache equivalence, planner batching, raw rollout GIF generation,
+environment wrappers, OOD controls, and baseline protocols.
 
 ## Run layout
-
-Every evaluation produces:
 
 ```text
 runs/<experiment_id>/
@@ -303,13 +379,9 @@ runs/<experiment_id>/
   metadata.json
   metrics.jsonl
   summary.json
-  checkpoint/
-  videos/
+  videos/eval.gif
   plots/
-  stdout.log
-  stderr.log
 ```
 
-`metadata.json` discloses state-only frames, action-only steps, paired/online
-steps, planner budget, OOD parameters, and trainable parameter count so the
-additional prior pretraining data is never hidden.
+`metadata.json` records state/action/paired training amounts, the fixed planning
+budget, OOD parameters, parameter counts and evaluation optimizations.

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from fa_robotics_planner.envs import make_env
-from fa_robotics_planner.evaluation import evaluate_policy
+from fa_robotics_planner.evaluation import evaluate_policy, write_episode_metrics
 from fa_robotics_planner.experiments.run import RunDirectory
 from fa_robotics_planner.models.builders import build_method
 from fa_robotics_planner.models.distributions import TanhNormal
@@ -22,6 +22,27 @@ from fa_robotics_planner.utils import seed_everything
 
 from ._common import checkpoint_path, config_from_unknown
 from .train_adapters import _load_priors
+
+
+FIXED_TASK_PLANNER_BUDGETS = {
+    "windy": (2, 256),
+    "fetch_slide": (1, 256),
+    "fetch_push": (2, 256),
+    "humanoid_stand": (2, 1),
+    "humanoid_balance": (2, 64),
+    "humanoid_reach": (2, 64),
+    "humanoid_push": (2, 64),
+}
+
+
+def apply_fixed_task_planner_budget(config) -> None:
+    """Make inference compute independent of training-data budget/CLI sweeps."""
+
+    if not bool(config.get("eval", {}).get("fixed_planner_budget", True)):
+        return
+    fixed = FIXED_TASK_PLANNER_BUDGETS.get(config["env"]["name"])
+    if fixed is not None:
+        config["planner"]["horizon"], config["planner"]["num_candidates"] = fixed
 
 
 class MethodPolicy:
@@ -43,7 +64,13 @@ class MethodPolicy:
         self.autocast_dtype = torch.bfloat16 if dtype_name == "bfloat16" else torch.float16
         mixed_precision = eval_config.get("mixed_precision", "auto")
         if str(mixed_precision).lower() == "auto":
-            mixed_precision = int(config["env"]["state_size"]) >= 128
+            # Large H1 states are memory-bound. FetchPush is video-rollout
+            # bound instead: BF16 speeds its 144-token H=2 decode on Ada while
+            # leaving the faster FP32 Windy/FetchSlide paths unchanged.
+            mixed_precision = (
+                int(config["env"]["state_size"]) >= 128
+                or str(config["env"]["name"]) == "fetch_push"
+            )
         self.mixed_precision = device.type == "cuda" and bool(mixed_precision)
         self.state_context_length = max(
             1, int(eval_config.get("state_context_length", 8))
@@ -69,7 +96,11 @@ class MethodPolicy:
             state_size = int(config["env"]["state_size"])
             # State-Prior activations dominate evaluation memory. Keep small
             # problems fully vectorized, but bound the large Fetch/H1 batches.
-            if state_size >= 256:
+            # A one-step planner never needs candidate video generation, so it
+            # can safely evaluate every candidate in one state-only batch.
+            if self.planner.horizon == 1:
+                candidate_batch_size = self.planner.num_candidates
+            elif state_size >= 256:
                 candidate_batch_size = 16
             elif state_size >= 64:
                 candidate_batch_size = 64
@@ -90,8 +121,9 @@ class MethodPolicy:
 
         self._rollout_states = None
         self._rollout_masks = None
-        self._rollout_proprio = None
-        self._rollout_visual = None
+        self._rollout_tokens = None
+        self._rollout_video_cache = None
+        self._rollout_video_summary = None
         self._rollout_step = 0
 
     def reset(self):
@@ -100,8 +132,8 @@ class MethodPolicy:
         self._action_prior_output = None
         self._observed_states = None
         self._observed_masks = None
-        self._observed_proprio = None
-        self._observed_visual = None
+        self._observed_tokens = None
+        self._real_prior_context = None
         self._episode_step = 0
         self._clear_rollout_context()
 
@@ -238,46 +270,98 @@ class MethodPolicy:
         batch = state.size(0)
         if self._observed_states is None or self._observed_masks is None:
             raise RuntimeError("Planner observation context was not initialized")
-        if self._rollout_step == 0 or self._rollout_step >= self.planner.horizon:
+        starting_rollout = (
+            self._rollout_step == 0
+            or self._rollout_step >= self.planner.horizon
+        )
+        if starting_rollout:
             self._rollout_step = 0
             # Every candidate shares the real observation prefix.  Evaluate
             # that prefix once; it is expanded only after the first action has
             # created genuinely different candidate states.
             self._rollout_states = self._observed_states
             self._rollout_masks = self._observed_masks
-            self._rollout_proprio = (
-                self._observed_proprio
-                if self._observed_proprio is not None
-                else None
+            if self._real_prior_context is None:
+                valid = torch.ones(
+                    self._observed_states.size(0),
+                    self._observed_states.size(1),
+                    dtype=torch.bool,
+                    device=state.device,
+                )
+                self._real_prior_context = self.method.state_prior.encode_context(
+                    self._observed_states,
+                    self._observed_masks,
+                    self._observed_tokens,
+                    valid,
+                )
+            prior = self._real_prior_context
+            passive = prior.passive_next
+            hidden = prior.observation_hidden
+            video_summary = prior.video_summary
+            video_cache = prior.video_cache
+        else:
+            valid = torch.ones(
+                self._rollout_states.size(0),
+                self._rollout_states.size(1),
+                dtype=torch.bool,
+                device=state.device,
             )
-            self._rollout_visual = (
-                self._observed_visual
-                if self._observed_visual is not None
-                else None
+            passive, hidden = (
+                self.method.state_prior.encode_observation_context(
+                    self._rollout_states,
+                    self._rollout_masks,
+                    self._rollout_video_summary,
+                    valid,
+                )
             )
-        valid = torch.ones(
-            self._rollout_states.size(0),
-            self._rollout_states.size(1),
-            dtype=torch.bool,
-            device=state.device,
-        )
-        prior = self.method.state_prior(
-            self._rollout_states,
-            self._rollout_masks,
-            self._rollout_proprio,
-            self._rollout_visual,
-            valid,
-            position_offset=max(0, self._episode_step + 1 - self._observed_states.size(1)),
-        )
-        passive = prior.passive_next[:, -1]
-        hidden = prior.hidden[:, -1]
+            video_summary = self._rollout_video_summary
+            video_cache = self._rollout_video_cache
         if passive.size(0) == 1 and batch != 1:
             passive = passive.expand(batch, -1)
             hidden = hidden.expand(batch, -1)
+            video_summary = video_summary.expand(batch, -1)
+        terminal_prediction = self._rollout_step + 1 >= self.planner.horizon
         if self.method.use_state_adapter:
-            predicted, _ = self.method.state_adapter(state, passive, action, hidden)
+            predicted, _, condition = self.method.state_adapter(
+                state, passive, action, hidden, video_summary
+            )
+            projected_condition = (
+                None
+                if terminal_prediction
+                else self.method.state_adapter.condition_to_video(condition)
+            )
+
+            def adapt(logits, token_hidden, spatial_index):
+                return self.method.state_adapter.adapt_video_logits(
+                    logits,
+                    token_hidden,
+                    spatial_index,
+                    condition,
+                    projected_condition=projected_condition,
+                )[0]
         else:
             predicted = passive
+            adapt = None
+        predicted_tokens = None
+        if not terminal_prediction:
+            if starting_rollout:
+                video_cache = self.method.state_prior.video_prior.repeat_cache(
+                    video_cache,
+                    batch,
+                    additional_tokens=(
+                        self.planner.horizon - self._rollout_step - 1
+                    )
+                    * self.method.state_prior.tokens_per_frame,
+                )
+            predicted_tokens, next_video_summary, video_cache = (
+                self.method.state_prior.generate_next_video(
+                    video_cache,
+                    hidden,
+                    logit_adapter=adapt,
+                )
+            )
+            self._rollout_video_cache = video_cache
+            self._rollout_video_summary = next_video_summary
         rollout_states = self._rollout_states
         rollout_masks = self._rollout_masks
         if rollout_states.size(0) == 1 and batch != 1:
@@ -286,31 +370,14 @@ class MethodPolicy:
         next_mask = rollout_masks[:, -1:]
         self._rollout_states = torch.cat((rollout_states, predicted[:, None]), 1)
         self._rollout_masks = torch.cat((rollout_masks, next_mask), 1)
-        if self._rollout_proprio is not None:
-            rollout_proprio = self._rollout_proprio
-            proprio_next = prior.proprio_next[:, -1:]
-            if rollout_proprio.size(0) == 1 and batch != 1:
-                rollout_proprio = rollout_proprio.expand(batch, -1, -1)
-                proprio_next = proprio_next.expand(batch, -1, -1)
-            self._rollout_proprio = torch.cat(
-                (rollout_proprio, proprio_next), 1
-            )
-        if self._rollout_visual is not None:
-            rollout_visual = self._rollout_visual
-            visual_next = prior.visual_next[:, -1:]
-            if rollout_visual.size(0) == 1 and batch != 1:
-                rollout_visual = rollout_visual.expand(batch, -1, -1)
-                visual_next = visual_next.expand(batch, -1, -1)
-            self._rollout_visual = torch.cat(
-                (rollout_visual, visual_next), 1
-            )
         self._rollout_step += 1
         return predicted
 
-    def _append_observation_context(self, state, mask, proprio, visual):
+    def _append_observation_context(self, state, mask, video_tokens):
         # Candidate rollout tensors are never part of the real observation
         # history and must not survive into the next environment step.
         self._clear_rollout_context()
+        self._real_prior_context = None
 
         def append(current, value):
             value = value.reshape(1, 1, -1)
@@ -319,10 +386,12 @@ class MethodPolicy:
 
         self._observed_states = append(self._observed_states, state)
         self._observed_masks = append(self._observed_masks, mask)
-        if proprio is not None:
-            self._observed_proprio = append(self._observed_proprio, proprio)
-        if visual is not None:
-            self._observed_visual = append(self._observed_visual, visual)
+        token_value = video_tokens.reshape(1, 1, *video_tokens.shape[-2:])
+        self._observed_tokens = (
+            token_value
+            if self._observed_tokens is None
+            else torch.cat((self._observed_tokens, token_value), 1)
+        )[:, -self.state_context_length :]
 
     def _score(self, states, goal, actions):
         name = self.config["env"]["name"]
@@ -355,22 +424,9 @@ class MethodPolicy:
             dtype=self.autocast_dtype,
             enabled=self.mixed_precision,
         ):
-            visual = None
-            if self.method.visual_encoder is not None:
-                rgb = torch.tensor(np.asarray(observation.rgb).copy(), device=self.device)
-                visual = self.method.visual_encoder(rgb)
-            proprio = None
-            if self.method.state_prior.proprio_dim:
-                proprio = torch.as_tensor(
-                    observation.proprio, device=self.device
-                ).float()
-                if proprio.numel() != self.method.state_prior.proprio_dim:
-                    raise ValueError(
-                        "Observation proprio does not match the State Prior proprio dimension"
-                    )
-            self._append_observation_context(
-                state, state_mask, proprio, visual
-            )
+            rgb = torch.tensor(np.asarray(observation.rgb).copy(), device=self.device)
+            video_tokens = self.method.tokenizer.encode(rgb.unsqueeze(0)).squeeze(0)
+            self._append_observation_context(state, state_mask, video_tokens)
             if self.action_selection == "proposal_mean":
                 base, hidden, _ = self._prior_output()
                 action = self._adapted_proposal(
@@ -436,6 +492,7 @@ def main() -> None:
     parser.add_argument("--adapters")
     args, unknown = parser.parse_known_args()
     config = config_from_unknown(["model=prior_adapter", "planner=shooting", *unknown])
+    apply_fixed_task_planner_budget(config)
     seed_everything(int(config.get("seed", 0)))
     env = make_env(config)
     method = build_method(config, env.action_low, env.action_high)
@@ -466,6 +523,12 @@ def main() -> None:
         map_location="cpu",
         weights_only=False,
     )
+    if int(adapters.get("architecture_version", 0)) != int(
+        method.state_prior.architecture_version
+    ):
+        raise ValueError(
+            "Adapter checkpoint predates joint state/video correction; retrain adapters"
+        )
     if adapters.get("state_adapter") is not None:
         method.state_adapter.load_state_dict(adapters["state_adapter"])
     if adapters.get("action_adapter") is not None:
@@ -527,7 +590,7 @@ def main() -> None:
             "method": "FunctionAlignmentWM",
             "state_adapter": method.use_state_adapter,
             "action_adapter": method.use_action_adapter,
-            "observation_mode": "rgb+proprio+control_state",
+            "observation_mode": "vq_tokens+control_state",
             "paired_steps": int(config.get("paired_steps", 0)),
             "state_only_steps": int(config.get("state_only_steps", 0)),
             "action_only_steps": int(config.get("action_only_steps", 0)),
@@ -559,11 +622,18 @@ def main() -> None:
     )
     summary["eval_optimizations"] = {
         "action_kv_cache": policy.use_action_kv_cache,
+        "real_state_context_cache": True,
+        "incremental_rollout_video_cache": True,
+        "preallocated_rollout_video_kv_suffix": True,
+        "skip_terminal_video_generation": True,
         "candidate_batch_size": policy.candidate_batch_size,
         "mixed_precision": policy.mixed_precision,
         "mixed_precision_dtype": str(eval_config.get("mixed_precision_dtype", "bfloat16")),
         "allow_tf32": allow_tf32,
         "vectorized_humanoid_scorer": env_name.startswith("humanoid_"),
+        "fixed_task_planner_budget": bool(
+            eval_config.get("fixed_planner_budget", True)
+        ),
     }
     baseline_name = str(eval_config.get("comparison_baseline", "gcrl"))
     baseline_video_override = eval_config.get("comparison_baseline_video")
@@ -571,8 +641,7 @@ def main() -> None:
         baseline_video = Path(str(baseline_video_override)).expanduser()
     else:
         baseline_experiment = (
-            f"baseline_{baseline_name}_{env_name}_steps"
-            f"{int(config.get('paired_steps', 0))}_seed{int(config.get('seed', 0))}"
+            f"baseline_{baseline_name}_{env_name}_seed{int(config.get('seed', 0))}"
         )
         baseline_video = (
             Path(config.get("run_root", "runs"))
@@ -580,6 +649,20 @@ def main() -> None:
             / "videos"
             / "eval.gif"
         )
+        # Read already-completed runs from the former data-budget naming scheme.
+        if not baseline_video.exists():
+            legacy_experiment = (
+                f"baseline_{baseline_name}_{env_name}_steps"
+                f"{int(config.get('paired_steps', 0))}_seed{int(config.get('seed', 0))}"
+            )
+            legacy_video = (
+                Path(config.get("run_root", "runs"))
+                / legacy_experiment
+                / "videos"
+                / "eval.gif"
+            )
+            if legacy_video.exists():
+                baseline_video = legacy_video
     if baseline_video.exists():
         from fa_robotics_planner.visualization import save_side_by_side
 
@@ -594,8 +677,9 @@ def main() -> None:
         summary["comparison_video"] = str(comparison_path)
     else:
         summary["comparison_video_pending"] = str(baseline_video)
-    for episode in episodes:
-        run.append_metric(episode)
+    write_episode_metrics(run.path / "metrics.jsonl", episodes)
+    summary["evaluation_metrics_file"] = "metrics.jsonl"
+    summary["per_step_rewards"] = True
     run.write_json("summary.json", summary)
     env.close()
     print(f"Saved evaluation to {run.path}")

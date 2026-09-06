@@ -53,6 +53,12 @@ eval:
   proposal_std_scale: 0.1
 
 model:
+  state_prior:
+    observation:
+      type: transformer
+      d_model: 128
+      n_layers: 3
+      n_heads: 4
   action_adapter:
     objective: maximum_likelihood
     normalize_goal_direction: true
@@ -67,3 +73,4 @@ planner:
   # and the filtered-adapter development run (15% vs 10%).  Longer imagined
   # rollouts compound contact-model error on Slide and are also slower.
   horizon: 1
+  num_candidates: 256

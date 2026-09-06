@@ -29,7 +29,7 @@ def make_adapter_optimizer(
     prior_parameters = {
         id(parameter)
         for name, child in method.named_children()
-        if name in {"state_prior", "action_prior"}
+        if name in {"state_prior", "action_prior", "tokenizer"}
         for parameter in child.parameters()
     }
     if any(id(parameter) in prior_parameters for parameter in parameters):

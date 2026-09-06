@@ -226,14 +226,12 @@ episodes and all post-success actions, but remains difficult: the filtered
 more reliable than longer imagined contact rollouts in independent 20- and
 100-episode comparisons.
 
-GC-SAC+HER now delays sampling until a complete episode exists and sizes the
-replay buffer so a short-budget run cannot invalidate its only complete
-episode by wrap-around. A 510-step HumanoidReach run crossed the first update
-at step 501 and completed. Real and relabelled samples use the same -1/0 HER
-reward, while evaluation reports native return, HER return, and final goal
-distance separately. A full 10k Windy run still produced no sparse successes;
-that is a low-budget learning result, not a serialization bug, and no dense
-reward was introduced to conceal it.
+The former online GC-SAC/HER implementation has been retired. The active GCRL
+baseline is goal-conditioned IQL trained only from paired shards; its future
+goal relabeling never queries an environment. Trajectory Transformer and
+DINO-WM use the same exact offline transition cap. DreamerV3 and TD-MPC2 are no
+longer active baselines, so historical runs from those methods are excluded by
+the plotting and aggregation code.
 
 Training now writes loss histories as JSON, NPZ, and PNG. Full adapter runs
 also write a state prediction GIF, an action target/prior/adapter plot, and

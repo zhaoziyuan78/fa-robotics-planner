@@ -10,6 +10,11 @@ env:
 
 model:
   state_prior:
+    observation:
+      type: transformer
+      d_model: 256
+      n_layers: 4
+      n_heads: 8
     # The previous implicit 2e-4 rate was still improving after 300 epochs.
     # Start faster, then reduce only when held-out loss plateaus.
     learning_rate: 0.002

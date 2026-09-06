@@ -6,6 +6,7 @@ env:
   proprio_slice: [2, 4]
   goal_size: 2
   action_adapter_achieved_goal_slice: [0, 2]
+  velocity_slice: [2, 4]
   action_size: 2
   dt: 0.1
   episode_horizon: 100
@@ -16,17 +17,23 @@ env:
   k_max: 0.015
   bounce_beta: 0.5
   success_radius: 0.1
+  # Paired collection continues for dynamics coverage, but evaluation ends at
+  # first success. TT must use the evaluation trajectory boundary.
+  tt_truncate_on_success: true
   region_count: 4
   region_w_scale: 0.6
   edge_margin: 0.08
   legacy_static_wind: true
   paired_data:
-    expert_fraction: 0.8
-    expert_noise: 0.05
-    expert_kp: 10.0
-    expert_kd: 1.0
-    expert_kw: 0.0
-    successful_expert_only: true
+    expert_fraction: 0.5
+    expert_noise: 0.0
+    expert_kp: 2.0
+    expert_kd: 0.8
+    expert_kw: 1.0
+    gaussian_mean_scale: 1.0
+    gaussian_std_scale: 0.35
+    continue_after_success: true
+    successful_expert_only: false
     success_reward_threshold: 1.0
   region_colors:
     - [60, 70, 80]
@@ -40,6 +47,12 @@ env:
 # Windy's smooth controller does not exhibit the phase-transition exposure
 # bias seen in manipulation, so uncorrupted action histories fit it better.
 model:
+  state_prior:
+    observation:
+      type: gru
+      d_model: 128
+      n_layers: 2
+      n_heads: 4
   action_adapter:
     history_prefix_max: 0
     history_noise_std: 0.0
@@ -47,3 +60,7 @@ model:
 
 eval:
   proposal_std_scale: 0.1
+
+planner:
+  horizon: 2
+  num_candidates: 256

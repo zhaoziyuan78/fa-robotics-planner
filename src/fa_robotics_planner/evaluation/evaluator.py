@@ -58,6 +58,7 @@ def evaluate_policy(
                 [{"reward": 0.0, "success": False}] if video_frames else []
             )
             episode_return = control_energy = planning_time = 0.0
+            step_rewards: list[float] = []
             success = False
             time_to_success = None
             forward_calls = sampled = steps_taken = 0
@@ -76,6 +77,7 @@ def evaluate_policy(
                 transition = env.step(action)
                 terminated, truncated = transition.terminated, transition.truncated
                 episode_return += transition.reward
+                step_rewards.append(float(transition.reward))
                 control_energy += float(np.square(action).sum())
                 success = success or bool(transition.info.get("success", False))
                 steps_taken = step + 1
@@ -121,6 +123,7 @@ def evaluate_policy(
                 {
                     "seed": seed,
                     "return": float(episode_return),
+                    "rewards": step_rewards,
                     "success": bool(success),
                     "time_to_success": time_to_success,
                     "episode_length": steps_taken,
@@ -146,5 +149,18 @@ def evaluate_policy(
     finally:
         progress.close()
     summary = summarize_episodes(episodes, bootstrap_samples)
-    summary["evaluation_wall_seconds"] = time.perf_counter() - evaluation_started
+    wall_seconds = time.perf_counter() - evaluation_started
+    evaluated_steps = sum(int(episode["episode_length"]) for episode in episodes)
+    planning_seconds = sum(
+        float(episode["planning_latency"]) * int(episode["episode_length"])
+        for episode in episodes
+    )
+    summary["evaluation_wall_seconds"] = wall_seconds
+    summary["evaluation_steps"] = evaluated_steps
+    summary["evaluation_steps_per_second"] = evaluated_steps / max(
+        wall_seconds, 1e-12
+    )
+    summary["planning_steps_per_second"] = evaluated_steps / max(
+        planning_seconds, 1e-12
+    )
     return episodes, summary

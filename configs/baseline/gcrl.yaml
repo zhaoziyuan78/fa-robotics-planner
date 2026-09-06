@@ -1,16 +1,24 @@
 baseline:
   name: gcrl
-  algorithm: GC-SAC
-  observation: goalenv_control_state+achieved_goal+desired_goal
-  implementation: stable_baselines3
-  her_tasks: [windy, fetch_slide, fetch_push, humanoid_reach, humanoid_push]
-  # Lower bound. HER automatically raises this to episode_horizon + 1 so the
-  # replay buffer contains a complete episode before its first sample.
-  learning_starts: 100
-  # null retains all transitions in each short-budget run.  This prevents an
-  # SB3 HER edge case where buffer wrap-around temporarily invalidates every
-  # complete episode and raises a misleading first-episode sampling error.
-  buffer_size: null
+  algorithm: GCRL
+  implementation: pytorch_offline_goal_conditioned_iql
+  observation: control_state+desired_goal
+  offline_only: true
+  data: null
+  hidden: 256
+  depth: 3
   batch_size: 256
-  checkpoint_interval: 10000
-  external_command: null
+  epochs: 50
+  gradient_updates: null
+  learning_rate: 0.0003
+  discount: 0.99
+  expectile: 0.7
+  advantage_temperature: 3.0
+  max_advantage_weight: 100.0
+  target_tau: 0.005
+  grad_clip: 10.0
+  her_ratio: 0.5
+  # Dense public goal distance is training-only; evaluation always reports the
+  # native environment reward. Goal-free tasks retain their native rewards.
+  goal_reward_type: dense
+  reward_scale: 0.0

@@ -4,7 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-data/
+/data/
 checkpoints/
 runs/
 results/
@@ -12,4 +12,3 @@ results/
 *.gif
 *.sh
 instruction.md
-command.md

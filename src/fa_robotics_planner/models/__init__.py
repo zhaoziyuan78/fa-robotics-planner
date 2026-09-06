@@ -3,6 +3,7 @@ from .action_prior import CausalActionPrior, DiscreteCausalActionPrior, RuleBase
 from .method import FunctionAlignmentWM
 from .state_adapter import StateAdapter
 from .state_prior import CausalStatePrior
+from .vqvae import VQVAE
 
 __all__ = [
     "ActionAdapter",
@@ -12,4 +13,5 @@ __all__ = [
     "FunctionAlignmentWM",
     "RuleBasedActionPrior",
     "StateAdapter",
+    "VQVAE",
 ]

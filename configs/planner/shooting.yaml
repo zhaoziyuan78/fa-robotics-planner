@@ -1,10 +1,8 @@
 planner:
   name: shooting
-  horizon: 2
+  horizon: 8
   num_candidates: 256
   execute_steps: 1
   discount: 0.99
   # A deterministic proposal-mean trajectory anchors every random search.
   include_mean_candidate: true
-  horizon_sweep: [2, 5, 10, 20]
-  candidate_sweep: [16, 64, 256, 1024]

@@ -10,6 +10,7 @@ from .action_prior import CausalActionPrior
 from .distributions import TanhNormal
 from .state_adapter import StateAdapter
 from .state_prior import CausalStatePrior
+from .vqvae import VQVAE
 
 
 class FunctionAlignmentWM(nn.Module):
@@ -19,6 +20,7 @@ class FunctionAlignmentWM(nn.Module):
         state_prior: CausalStatePrior,
         state_adapter: StateAdapter | None,
         action_adapter: ActionAdapter | None,
+        tokenizer: VQVAE | None = None,
         *,
         use_state_adapter: bool = True,
         use_action_adapter: bool = True,
@@ -28,6 +30,7 @@ class FunctionAlignmentWM(nn.Module):
         self.state_prior = state_prior
         self.state_adapter = state_adapter
         self.action_adapter = action_adapter
+        self.tokenizer = tokenizer
         self.use_state_adapter = bool(use_state_adapter)
         self.use_action_adapter = bool(use_action_adapter)
         if self.use_state_adapter and state_adapter is None:
@@ -38,7 +41,9 @@ class FunctionAlignmentWM(nn.Module):
         self.apply_ablation()
 
     def freeze_priors(self) -> None:
-        for module in (self.action_prior, self.state_prior):
+        for module in (self.action_prior, self.state_prior, self.tokenizer):
+            if module is None:
+                continue
             module.eval()
             for parameter in module.parameters():
                 parameter.requires_grad = False
@@ -82,16 +87,37 @@ class FunctionAlignmentWM(nn.Module):
         state_sequence: torch.Tensor,
         state_mask: torch.Tensor,
         current_action: torch.Tensor,
-        **state_observations,
-    ) -> torch.Tensor:
-        passive, hidden = self.state_prior.predict_next(
-            state_sequence, state_mask, **state_observations
+        video_tokens: torch.Tensor,
+        valid_steps: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        context = self.state_prior.encode_context(
+            state_sequence, state_mask, video_tokens, valid_steps
         )
         if not self.use_state_adapter:
-            return passive
+            tokens, _, _ = self.state_prior.generate_next_video(
+                context.video_cache, context.observation_hidden
+            )
+            return context.passive_next, tokens
         assert self.state_adapter is not None
-        predicted, _ = self.state_adapter(state_sequence[:, -1], passive, current_action, hidden)
-        return predicted
+        predicted, _, condition = self.state_adapter(
+            state_sequence[:, -1],
+            context.passive_next,
+            current_action,
+            context.observation_hidden,
+            context.video_summary,
+        )
+
+        def adapt(logits, token_hidden, spatial_index):
+            return self.state_adapter.adapt_video_logits(
+                logits, token_hidden, spatial_index, condition
+            )[0]
+
+        tokens, _, _ = self.state_prior.generate_next_video(
+            context.video_cache,
+            context.observation_hidden,
+            logit_adapter=adapt,
+        )
+        return predicted, tokens
 
     def parameter_report(self) -> dict[str, object]:
         trainable = [name for name, parameter in self.named_parameters() if parameter.requires_grad]

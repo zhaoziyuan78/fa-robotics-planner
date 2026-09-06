@@ -5,10 +5,10 @@ import torch
 
 from fa_robotics_planner.models.action_adapter import ActionAdapter
 from fa_robotics_planner.models.action_prior import CausalActionPrior, DiscreteCausalActionPrior
-from fa_robotics_planner.models.encoders import VisualEncoder
 from fa_robotics_planner.models.method import FunctionAlignmentWM
 from fa_robotics_planner.models.state_adapter import StateAdapter
 from fa_robotics_planner.models.state_prior import CausalStatePrior
+from fa_robotics_planner.models.vqvae import VQVAE
 from fa_robotics_planner.training.parameters import make_adapter_optimizer
 from fa_robotics_planner.models.distributions import TanhNormal
 from fa_robotics_planner.training.losses import (
@@ -21,8 +21,12 @@ from scripts.train_adapters import _load_priors
 
 def modules(use_state=True, use_action=True):
     action_prior = CausalActionPrior(2, d_model=16, n_layers=1, n_heads=2, dropout=0, max_length=8)
-    state_prior = CausalStatePrior(4, d_model=16, n_layers=1, n_heads=2, dropout=0, max_length=8)
-    state_adapter = StateAdapter(4, 2, 16, 16)
+    state_prior = CausalStatePrior(
+        4, codebook_size=16, tokens_per_frame=4,
+        video_d_model=16, video_layers=1, video_heads=2, video_d_ff=32,
+        d_model=16, n_layers=1, n_heads=2, dropout=0, max_length=8,
+    )
+    state_adapter = StateAdapter(4, 2, 16, 16, 16, 16, 4)
     action_adapter = ActionAdapter(2, 4, 2, 16, 16)
     return FunctionAlignmentWM(
         action_prior,
@@ -52,11 +56,33 @@ def test_adapter_output_shapes_and_prior_freezing():
         torch.zeros(3, 1, 4),
         torch.ones(3, 1, 4, dtype=torch.bool),
         torch.zeros(3, 2),
+        torch.zeros(3, 1, 2, 2, dtype=torch.long),
         valid_steps=torch.ones(3, 1, dtype=torch.bool),
     )
-    assert predicted.shape == (3, 4)
+    assert predicted[0].shape == (3, 4)
+    assert predicted[1].shape == (3, 4)
     assert all(not parameter.requires_grad for parameter in method.action_prior.parameters())
     assert all(not parameter.requires_grad for parameter in method.state_prior.parameters())
+
+
+def test_state_adapter_preprojected_video_condition_is_equivalent():
+    torch.manual_seed(9)
+    adapter = StateAdapter(4, 2, 16, 16, 16, 16, 4).eval()
+    logits = torch.randn(3, 16)
+    token_hidden = torch.randn(3, 16)
+    condition = torch.randn(3, 16)
+    expected, _ = adapter.adapt_video_logits(
+        logits, token_hidden, 2, condition
+    )
+    projected = adapter.condition_to_video(condition)
+    actual, _ = adapter.adapt_video_logits(
+        logits,
+        token_hidden,
+        2,
+        condition,
+        projected_condition=projected,
+    )
+    assert torch.equal(actual, expected)
 
 
 def test_adapter_off_bypasses_modules_and_optimizer_membership():
@@ -72,6 +98,7 @@ def test_adapter_off_bypasses_modules_and_optimizer_membership():
         torch.zeros(1, 1, 4),
         torch.ones(1, 1, 4, dtype=torch.bool),
         torch.zeros(1, 2),
+        torch.zeros(1, 1, 2, 2, dtype=torch.long),
         valid_steps=torch.ones(1, 1, dtype=torch.bool),
     )
     assert method.parameter_report()["trainable_parameters"] == 0
@@ -135,9 +162,10 @@ def test_frozen_prior_parameters_do_not_update():
         torch.zeros(2, 1, 4),
         torch.ones(2, 1, 4, dtype=torch.bool),
         torch.zeros(2, 2),
+        torch.zeros(2, 1, 2, 2, dtype=torch.long),
         valid_steps=torch.ones(2, 1, dtype=torch.bool),
     )
-    loss = distribution.loc.sum() + predicted.sum()
+    loss = distribution.loc.sum() + predicted[0].sum()
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -145,31 +173,123 @@ def test_frozen_prior_parameters_do_not_update():
         assert torch.equal(dict(method.named_parameters())[name], expected)
 
 
-def test_visual_latents_have_bounded_scale_when_normalized():
-    encoder = VisualEncoder(8, normalize_output=True)
-    latent = encoder(torch.randint(0, 256, (3, 16, 16, 3), dtype=torch.uint8))
-    assert torch.allclose(latent.norm(dim=-1), torch.ones(3), atol=1e-5)
+def test_vqvae_tokenizes_frames_and_state_prior_is_dual_autoregressive():
+    tokenizer = VQVAE(hidden_dim=16, codebook_size=16, code_dim=8)
+    images = torch.randint(0, 256, (3, 16, 16, 3), dtype=torch.uint8)
+    output = tokenizer(images)
+    assert output.tokens.shape == (3, 2, 2)
+    assert output.reconstruction.shape == (3, 3, 16, 16)
+    assert torch.isfinite(output.loss)
 
     prior = CausalStatePrior(
-        4,
-        visual_dim=8,
-        d_model=16,
-        n_layers=1,
-        n_heads=2,
-        dropout=0,
-        max_length=8,
-        normalize_visual=True,
+        4, codebook_size=16, tokens_per_frame=4,
+        video_d_model=16, video_layers=1, video_heads=2, video_d_ff=32,
+        d_model=16, n_layers=1, n_heads=2, dropout=0, max_length=8,
     )
-    output = prior(
+    prediction = prior(
         torch.zeros(3, 2, 4),
         torch.ones(3, 2, 4, dtype=torch.bool),
-        visual_sequence=latent[:, None].expand(-1, 2, -1),
+        output.tokens[:, None].expand(-1, 2, -1, -1),
+        torch.ones(3, 2, dtype=torch.bool),
     )
-    assert torch.allclose(output.visual_next.norm(dim=-1), torch.ones(3, 2), atol=1e-5)
+    assert prediction.passive_next.shape == (3, 1, 4)
+    assert prediction.video_logits.shape == (3, 1, 4, 16)
 
-    single = encoder(torch.randint(0, 256, (16, 16, 3), dtype=torch.uint8))
-    assert single.shape == (8,)
-    assert torch.allclose(single.norm(), torch.tensor(1.0), atol=1e-5)
+
+def test_state_adapter_zero_initialization_and_joint_corrections():
+    method = modules()
+    states = torch.zeros(2, 2, 4)
+    masks = torch.ones_like(states, dtype=torch.bool)
+    tokens = torch.zeros(2, 2, 2, 2, dtype=torch.long)
+    prior = method.state_prior(states, masks, tokens)
+    predicted, delta, condition = method.state_adapter(
+        states[:, :-1],
+        prior.passive_next,
+        torch.zeros(2, 1, 2),
+        prior.hidden,
+        prior.video_summary[:, :-1],
+    )
+    logits, logit_delta = method.state_adapter.adapt_video_sequence(
+        prior.video_logits,
+        prior.video_predictor_hidden,
+        condition,
+    )
+    assert torch.equal(predicted, prior.passive_next)
+    assert not delta.any()
+    assert torch.equal(logits, prior.video_logits)
+    assert not logit_delta.any()
+    with torch.no_grad():
+        method.state_adapter.state_head.bias.fill_(0.1)
+        method.state_adapter.video_head[-1].bias[0] = 0.2
+    predicted, delta, condition = method.state_adapter(
+        states[:, :-1], prior.passive_next, torch.zeros(2, 1, 2),
+        prior.hidden, prior.video_summary[:, :-1]
+    )
+    logits, logit_delta = method.state_adapter.adapt_video_sequence(
+        prior.video_logits, prior.video_predictor_hidden, condition
+    )
+    assert delta.abs().sum() > 0
+    assert logit_delta.abs().sum() > 0
+    assert not torch.equal(predicted, prior.passive_next)
+    assert not torch.equal(logits, prior.video_logits)
+
+
+def test_video_prior_projected_kv_cache_matches_full_recomputation():
+    torch.manual_seed(8)
+    prior = modules().state_prior.eval()
+    history = torch.randint(0, 16, (2, 2, 2, 2))
+    appended = torch.randint(0, 16, (2, 4))
+    cache = prior.video_prior.build_cache(history)
+    cache, incremental = prior.video_prior.append_to_cache(cache, appended)
+    full = prior.video_prior(
+        torch.cat((history, appended.reshape(2, 1, 2, 2)), dim=1)
+    )
+    assert torch.allclose(incremental, full[:, -1], atol=1e-5)
+
+
+def test_reserved_video_cache_matches_full_recomputation_without_reallocation():
+    torch.manual_seed(18)
+    prior = modules().state_prior.eval()
+    history = torch.randint(0, 16, (1, 2, 2, 2))
+    appended = torch.randint(0, 16, (3, 8))
+    shared = prior.video_prior.build_cache(history)
+    cache = prior.video_prior.repeat_cache(
+        shared, batch_size=3, additional_tokens=8
+    )
+    storage = [layer["key"].data_ptr() for layer in cache["layers"]]
+    cache, first = prior.video_prior.append_to_cache(cache, appended[:, :4])
+    cache, second = prior.video_prior.append_to_cache(cache, appended[:, 4:])
+    full_tokens = torch.cat(
+        (
+            history.expand(3, -1, -1, -1),
+            appended.reshape(3, 2, 2, 2),
+        ),
+        dim=1,
+    )
+    full = prior.video_prior(full_tokens)
+    assert torch.allclose(first, full[:, -2], atol=1e-5)
+    assert torch.allclose(second, full[:, -1], atol=1e-5)
+    assert storage == [layer["key"].data_ptr() for layer in cache["layers"]]
+    assert shared["length"] == 8
+
+
+def test_state_context_cache_matches_single_full_video_encoding():
+    torch.manual_seed(9)
+    prior = modules().state_prior.eval()
+    states = torch.randn(2, 3, 4)
+    masks = torch.ones_like(states, dtype=torch.bool)
+    tokens = torch.randint(0, 16, (2, 3, 2, 2))
+    valid = torch.ones(2, 3, dtype=torch.bool)
+    normalized = prior._normalize(states) * masks.to(states.dtype)
+    observation_hidden = prior.observation_prior(normalized, masks, valid)[:, -1]
+    video_summary = prior.video_prior(tokens, valid)[:, -1].mean(1)
+    expected = prior._predict_state(
+        states[:, -1], observation_hidden, video_summary, True
+    )
+    cached = prior.encode_context(states, masks, tokens, valid)
+    assert torch.allclose(cached.observation_hidden, observation_hidden, atol=1e-6)
+    assert torch.allclose(cached.video_summary, video_summary, atol=1e-5)
+    assert torch.allclose(cached.passive_next, expected, atol=1e-5)
 
 
 def test_masked_state_loss_ignores_non_finite_padding():
@@ -228,10 +348,8 @@ def test_soft_action_objective_has_zero_kl_for_unchanged_prior():
     assert kl.item() == 0.0
 
 
-def test_adapter_training_rejects_pre_normalization_state_checkpoint(tmp_path):
+def test_adapter_training_rejects_legacy_continuous_visual_checkpoint(tmp_path):
     method = modules()
-    method.state_prior.visual_dim = 8
-    method.state_prior.normalize_visual = True
     state_path = tmp_path / "state.pt"
     action_path = tmp_path / "action.pt"
     torch.save(
@@ -242,5 +360,5 @@ def test_adapter_training_rejects_pre_normalization_state_checkpoint(tmp_path):
         state_path,
     )
     torch.save({"state": {}}, action_path)
-    with pytest.raises(ValueError, match="Retrain the State Prior"):
+    with pytest.raises(ValueError, match="Retrain VQ-VAE"):
         _load_priors(method, state_path, action_path)

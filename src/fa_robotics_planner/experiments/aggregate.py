@@ -21,6 +21,8 @@ KEYS = (
     "episode_return",
     "paired_steps",
 )
+REMOVED_BASELINES = {"DreamerV3", "TD-MPC2", "GC-SAC"}
+ACTIVE_BASELINES = {"GCRL", "TT", "DINO-WM"}
 
 
 def _mean_scalar(value: Any, default: float = float("nan")) -> float:
@@ -47,10 +49,20 @@ def aggregate(runs: str | Path, output: str | Path) -> list[dict[str, Any]]:
             missing.append(f"- `{run.name}`: missing metadata.json or summary.json")
             continue
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("method") in REMOVED_BASELINES:
+            continue
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         if summary.get("status", "complete") != "complete":
             missing.append(
                 f"- `{run.name}`: status={summary.get('status', 'unknown')}"
+            )
+            continue
+        if metadata.get("method") in ACTIVE_BASELINES and (
+            int(summary.get("training_environment_steps", -1)) != 0
+            or "offline_transitions" not in summary
+        ):
+            missing.append(
+                f"- `{run.name}`: baseline predates the shared offline protocol"
             )
             continue
         success = summary.get("success", summary.get("success_rate", {}))

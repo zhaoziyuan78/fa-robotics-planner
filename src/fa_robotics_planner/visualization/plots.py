@@ -29,8 +29,7 @@ def generate_standard_plots(rows: Iterable[dict[str, Any]], output: str | Path) 
     rows = list(rows)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    _scatter(rows, "paired_steps", "success_rate", output / "success_vs_paired_data.png")
-    _scatter(rows, "num_candidates", "success_rate", output / "success_vs_planning_candidates.png")
+    _scatter(rows, "env_id", "success_rate", output / "success_by_task.png")
     _scatter(rows, "eval", "success_rate", output / "id_vs_ood_success.png")
     # The remaining metrics may be supplied by specialized world-model evals;
     # create consistently named figures rather than mixing plot code into training.
@@ -54,4 +53,3 @@ def generate_standard_plots(rows: Iterable[dict[str, Any]], output: str | Path) 
     figure.tight_layout()
     figure.savefig(output / "adapter_ablation_heatmap.png", dpi=180)
     plt.close(figure)
-

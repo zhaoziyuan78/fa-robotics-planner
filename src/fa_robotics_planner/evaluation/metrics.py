@@ -2,9 +2,58 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import numpy as np
+
+
+def write_episode_metrics(
+    path: str | Path, episodes: Iterable[Mapping[str, Any]]
+) -> Path:
+    """Atomically replace an evaluation JSONL with per-step reward records.
+
+    Baseline workers historically used two filenames and some appended to a
+    previous invocation of the same experiment.  Keeping this small writer in
+    the dependency-free metrics module gives every evaluator one canonical,
+    validated protocol without importing the main experiment runner.
+    """
+
+    target = Path(path)
+    rows = []
+    for index, episode in enumerate(episodes):
+        row = dict(episode)
+        if "rewards" not in row:
+            raise ValueError(
+                f"Episode {index} is missing the per-step 'rewards' sequence"
+            )
+        rewards = [float(reward) for reward in row["rewards"]]
+        if not rewards:
+            raise ValueError(f"Episode {index} has an empty 'rewards' sequence")
+        if not np.isfinite(rewards).all():
+            raise ValueError(f"Episode {index} rewards contain NaN or infinity")
+        if "episode_length" in row and int(row["episode_length"]) != len(rewards):
+            raise ValueError(
+                f"Episode {index} length does not match its rewards sequence"
+            )
+        if "return" in row and not np.isclose(
+            float(row["return"]), sum(rewards), rtol=1e-6, atol=1e-6
+        ):
+            raise ValueError(
+                f"Episode {index} return does not equal the sum of rewards"
+            )
+        row["rewards"] = rewards
+        rows.append(row)
+    if not rows:
+        raise ValueError("Cannot write an empty evaluation metrics file")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+    temporary.replace(target)
+    return target
 
 
 def bootstrap_ci(
